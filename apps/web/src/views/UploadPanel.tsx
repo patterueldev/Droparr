@@ -3,10 +3,12 @@ import * as tus from "tus-js-client";
 import {
   allowedUploadExtensionsLabel,
   isAllowedUploadFileName,
+  type Upload,
   type UploadSettings,
 } from "@droparr/shared";
 import { api, connectUploadEvents, formatBytes } from "../api";
 import { filesFromDataTransfer, filesFromInputList } from "../upload/collect";
+import { reconcileFile } from "../upload/reconcile";
 import { createUpload } from "../upload/uploader";
 
 const MAX_PARALLEL_FILES = 2;
@@ -29,6 +31,8 @@ interface FileEntry {
   error?: string;
   sent: number;
   resuming?: boolean;
+  /** Existing server upload to resume (HEAD) instead of creating a new one. */
+  resumeUrl?: string;
 }
 
 interface LastDrop {
@@ -58,7 +62,11 @@ export default function UploadPanel({
   onAnalyze: (path: string) => void;
 }) {
   const [entries, setEntries] = useState<FileEntry[]>([]);
-  const [dropId, setDropId] = useState(newDropId);
+  // Resume the drop from the stored record so files re-added after a browser
+  // restart reconcile against (and land in) the same quarantine dir.
+  const [dropId, setDropId] = useState(
+    () => readLastDrop()?.dropId ?? newDropId(),
+  );
   const [dragOver, setDragOver] = useState(false);
   const [completePath, setCompletePath] = useState<string | undefined>();
   const [serverProgress, setServerProgress] = useState<{
@@ -69,9 +77,16 @@ export default function UploadPanel({
 
   const startedRef = useRef(new Set<string>());
   const uploadsRef = useRef(new Map<string, tus.Upload>());
+  const entriesRef = useRef<FileEntry[]>([]);
   const serverOffsetsRef = useRef(new Map<string, { offset: number; size: number }>());
+  /** Upload ids that belong to the current drop (from the reconcile fetch). */
+  const serverIdsRef = useRef(new Set<string>());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dirInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    entriesRef.current = entries;
+  }, [entries]);
 
   const validate = useCallback(
     (candidate: { relPath: string; size: number }, existing: FileEntry[]): string | undefined => {
@@ -97,42 +112,87 @@ export default function UploadPanel({
     [uploadSettings],
   );
 
-  const addFiles = useCallback(
-    (dropped: { file: File; relPath: string }[]) => {
-      if (dropped.length === 0) return;
-      setEntries((prev) => {
-        const next = [...prev];
-        for (const item of dropped) {
-          const error = validate(
-            { relPath: item.relPath, size: item.file.size },
-            next,
-          );
-          next.push({
-            key: `${item.relPath}:${item.file.size}:${item.file.lastModified}`,
-            file: item.file,
-            relPath: item.relPath,
-            size: item.file.size,
-            status: error ? "invalid" : "queued",
-            error,
-            sent: 0,
-          });
-        }
-        const pending = next.filter(
-          (e) => e.status === "queued" || e.status === "uploading",
-        );
-        if (pending.length > 0) {
-          const record: LastDrop = {
-            dropId,
-            files: next.map((e) => ({ relPath: e.relPath, size: e.size })),
-            at: new Date().toISOString(),
-          };
-          localStorage.setItem(LAST_DROP_KEY, JSON.stringify(record));
-          setLastDrop(record);
-        }
-        return next;
-      });
+  const persistLastDrop = useCallback(
+    (list: FileEntry[]) => {
+      const pending = list.filter(
+        (e) => e.status === "queued" || e.status === "uploading",
+      );
+      if (pending.length === 0) return;
+      const record: LastDrop = {
+        dropId,
+        files: list.map((e) => ({ relPath: e.relPath, size: e.size })),
+        at: new Date().toISOString(),
+      };
+      localStorage.setItem(LAST_DROP_KEY, JSON.stringify(record));
+      setLastDrop(record);
     },
-    [dropId, validate],
+    [dropId],
+  );
+
+  const addFiles = useCallback(
+    async (dropped: { file: File; relPath: string }[]) => {
+      if (dropped.length === 0) return;
+
+      // Reconcile with the server first: already-complete files are marked
+      // done (no re-upload) and in-progress files resume at the stored offset
+      // in this same drop dir. This also keeps the drop association intact
+      // after a browser restart.
+      let existingByPath = new Map<string, Upload>();
+      try {
+        const res = await api.uploads(dropId);
+        existingByPath = new Map(
+          res.uploads
+            .filter((u) => u.state !== "cancelled")
+            .map((u) => [u.relPath, u]),
+        );
+      } catch {
+        // Reconcile is best-effort; plain uploads still work.
+      }
+      serverIdsRef.current = new Set(
+        [...existingByPath.values()].map((u) => u.id),
+      );
+
+      const next = [...entriesRef.current];
+      for (const item of dropped) {
+        const error = validate(
+          { relPath: item.relPath, size: item.file.size },
+          next,
+        );
+        let entry: FileEntry = {
+          key: `${item.relPath}:${item.file.size}:${item.file.lastModified}`,
+          file: item.file,
+          relPath: item.relPath,
+          size: item.file.size,
+          status: error ? "invalid" : "queued",
+          error,
+          sent: 0,
+        };
+        const decision = error
+          ? {}
+          : reconcileFile({
+              relPath: item.relPath,
+              size: item.file.size,
+              existingByPath,
+            });
+        if (decision.error) {
+          entry = { ...entry, status: "invalid", error: decision.error };
+        } else if (decision.alreadyCompleteSize !== undefined) {
+          entry = {
+            ...entry,
+            status: "done",
+            sent: decision.alreadyCompleteSize,
+          };
+        } else if (decision.resumeUrl) {
+          entry = { ...entry, resuming: true, resumeUrl: decision.resumeUrl };
+        }
+        next.push(entry);
+      }
+
+      entriesRef.current = next;
+      setEntries(next);
+      persistLastDrop(next);
+    },
+    [dropId, persistLastDrop, validate],
   );
 
   const startEntry = useCallback(
@@ -149,6 +209,7 @@ export default function UploadPanel({
         file: entry.file,
         relPath: entry.relPath,
         dropId,
+        uploadUrl: entry.resumeUrl,
         onProgress: (sent) => {
           setEntries((prev) =>
             prev.map((e) => (e.key === entry.key ? { ...e, sent } : e)),
@@ -175,14 +236,24 @@ export default function UploadPanel({
 
       void (async () => {
         try {
-          const previous = await upload.findPreviousUploads();
-          if (previous.length > 0) {
-            upload.resumeFromPreviousUpload(previous[0]);
-            setEntries((prev) =>
-              prev.map((e) =>
-                e.key === entry.key ? { ...e, resuming: true } : e,
-              ),
-            );
+          if (!entry.resumeUrl) {
+            // Fingerprint resume is a fallback only, and only when the stored
+            // URL belongs to this drop — otherwise files could resume into an
+            // older drop dir and this drop would never complete.
+            const previous = await upload.findPreviousUploads();
+            const previousId = previous[0]?.uploadUrl?.split("/").pop();
+            if (
+              previous.length > 0 &&
+              previousId &&
+              serverIdsRef.current.has(previousId)
+            ) {
+              upload.resumeFromPreviousUpload(previous[0]);
+              setEntries((prev) =>
+                prev.map((e) =>
+                  e.key === entry.key ? { ...e, resuming: true } : e,
+                ),
+              );
+            }
           }
           upload.start();
         } catch (err) {
