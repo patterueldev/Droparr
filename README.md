@@ -60,11 +60,16 @@ Deploy with Docker:
 docker compose up -d --build
 ```
 
-The server serves the built UI and the API on a single port (`3100`). Configure
-instances, categories and the staging directory in **Settings** on first run.
+The server serves the built UI and the API on a single port (`3100`).
 
-First login: open the UI — Droparr asks for your Jellyfin URL first (wizard
-lands in M2.2), then sign in with your Jellyfin account. Jellyfin admins become
+**First run:** open the UI — a setup wizard asks for your Jellyfin URL, then a
+Jellyfin **admin** signs in and confirms; that account becomes the Droparr admin
+and the wizard locks permanently (the lock lives in SQLite, so deleting
+`config.json` cannot reopen it). While setup is incomplete, every API route
+except health/auth/setup is blocked.
+
+**After setup:** sign in with your Jellyfin account and configure instances,
+categories and the staging directory in **Settings**. Jellyfin admins become
 Droparr admins; other accounts can sign in and manage their own sessions, while
 submitter features arrive in M3. Droparr never stores Jellyfin passwords.
 

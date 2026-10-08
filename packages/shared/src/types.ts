@@ -37,8 +37,24 @@ export interface AuthSession {
 }
 
 export interface AuthStatus {
-  /** True until a Jellyfin server URL has been configured (first run). */
+  /**
+   * True until the first-run setup wizard has completed (lock marker in
+   * SQLite, so deleting the config file does not reopen it).
+   */
   setupRequired: boolean;
+  authenticated: boolean;
+  user?: User;
+}
+
+/**
+ * Wizard state for `GET /api/setup/status`. Only served while setup is
+ * incomplete — the endpoint locks itself once the marker is set.
+ */
+export interface SetupStatus {
+  setupRequired: boolean;
+  /** A Jellyfin URL is already saved (wizard step 1 done). */
+  jellyfinConfigured: boolean;
+  jellyfinBaseUrl?: string;
   authenticated: boolean;
   user?: User;
 }

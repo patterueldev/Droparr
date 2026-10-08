@@ -1,11 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { JellyfinAuthError, JellyfinClient } from "@droparr/core";
-import {
-  jellyfinBaseUrlSchema,
-  type AuthSession,
-  type AuthStatus,
-} from "@droparr/shared";
+import type { AuthSession, AuthStatus } from "@droparr/shared";
 import type { ConfigStore } from "../config/store.js";
 import type { Db } from "../db.js";
 import { SESSION_COOKIE, hashSessionToken, type SessionService } from "../auth/sessions.js";
@@ -17,13 +13,6 @@ const loginSchema = z.object({
   username: z.string().min(1).max(256),
   password: z.string().min(1).max(1024),
 });
-
-const baseUrlSchema = z.object({
-  baseUrl: jellyfinBaseUrlSchema,
-});
-
-/** Light per-IP limit on the unauthenticated first-run bootstrap endpoints. */
-const BOOTSTRAP_RATE_LIMIT = { max: 20, timeWindow: "1 minute" };
 
 export interface AuthRouteDeps {
   config: ConfigStore;
@@ -48,70 +37,11 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps): void {
 
   app.get("/api/auth/status", async (req): Promise<AuthStatus> => {
     return {
-      setupRequired: !config.get().jellyfin?.baseUrl,
+      setupRequired: !db.isSetupComplete(),
       authenticated: !!req.auth,
       user: req.auth?.user,
     };
   });
-
-  /**
-   * Bootstrap (issue #6 replaces this with the locked setup wizard): while no
-   * Jellyfin URL is configured these endpoints are open so a fresh install
-   * can point Droparr at Jellyfin before anyone can log in.
-   */
-  app.post(
-    "/api/auth/jellyfin/test",
-    { config: { rateLimit: BOOTSTRAP_RATE_LIMIT } },
-    async (req, reply) => {
-      if (config.get().jellyfin?.baseUrl) {
-        return reply.code(403).send({
-          error: "Jellyfin is already configured — change it in Settings.",
-        });
-      }
-      const parsed = baseUrlSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return reply.code(400).send({ error: parsed.error.flatten() });
-      }
-      try {
-        const info = await new JellyfinClient({
-          baseUrl: parsed.data.baseUrl,
-        }).publicSystemInfo();
-        return { ok: true, ...info };
-      } catch (err) {
-        return reply.code(502).send({
-          ok: false,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    },
-  );
-
-  app.post(
-    "/api/auth/jellyfin",
-    { config: { rateLimit: BOOTSTRAP_RATE_LIMIT } },
-    async (req, reply) => {
-      if (config.get().jellyfin?.baseUrl) {
-        return reply.code(403).send({
-          error: "Jellyfin is already configured — change it in Settings.",
-        });
-      }
-      const parsed = baseUrlSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return reply.code(400).send({ error: parsed.error.flatten() });
-      }
-      const baseUrl = parsed.data.baseUrl.replace(/\/+$/, "");
-      try {
-        const info = await new JellyfinClient({ baseUrl }).publicSystemInfo();
-        await config.updateSettings({ jellyfin: { baseUrl } });
-        return { ok: true, ...info };
-      } catch (err) {
-        return reply.code(502).send({
-          ok: false,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    },
-  );
 
   app.post(
     "/api/auth/login",
