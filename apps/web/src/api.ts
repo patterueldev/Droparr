@@ -6,6 +6,8 @@ import type {
   FolderAnalysis,
   HistoryEntry,
   Instance,
+  UploadEvent,
+  UploadListResponse,
   User,
 } from "@droparr/shared";
 
@@ -167,11 +169,18 @@ export const api = {
       `/api/jobs/${id}`,
     ),
 
+  // Uploads
+  uploads: (dropId: string) =>
+    request<UploadListResponse>(
+      `/api/uploads?dropId=${encodeURIComponent(dropId)}`,
+    ),
+
   // History
   history: () => request<HistoryEntry[]>("/api/history"),
 };
 
 export interface JobEvent {
+  type: "job";
   jobId: string;
   phase:
     | "queued"
@@ -198,11 +207,14 @@ export interface JobEvent {
 }
 
 type JobListener = (e: JobEvent) => void;
+type UploadListener = (e: UploadEvent) => void;
 type RevokedListener = () => void;
 
-// One shared WebSocket for all consumers (live job progress + session
-// revocation notices). Frames without a `type` are legacy job events.
+// One shared WebSocket for all consumers (live job progress, upload progress
+// and session revocation notices). Frames are routed by `type`; job frames
+// without a `type` are legacy job events.
 const jobListeners = new Set<JobListener>();
+const uploadListeners = new Set<UploadListener>();
 const revokedListeners = new Set<RevokedListener>();
 let socket: WebSocket | null = null;
 
@@ -214,7 +226,13 @@ function ensureSocket(): void {
   ) {
     return;
   }
-  if (jobListeners.size === 0 && revokedListeners.size === 0) return;
+  if (
+    jobListeners.size === 0 &&
+    uploadListeners.size === 0 &&
+    revokedListeners.size === 0
+  ) {
+    return;
+  }
 
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(`${proto}//${location.host}/api/ws`);
@@ -226,12 +244,18 @@ function ensureSocket(): void {
     } catch {
       return; // ignore malformed frames
     }
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      (parsed as { type?: string }).type === "session-revoked"
-    ) {
+    const type =
+      typeof parsed === "object" && parsed !== null
+        ? (parsed as { type?: string }).type
+        : undefined;
+    if (type === "session-revoked") {
       for (const listener of [...revokedListeners]) listener();
+      return;
+    }
+    if (type === "upload") {
+      for (const listener of [...uploadListeners]) {
+        listener(parsed as UploadEvent);
+      }
       return;
     }
     for (const listener of [...jobListeners]) listener(parsed as JobEvent);
@@ -247,6 +271,15 @@ export function connectJobEvents(onEvent: JobListener): () => void {
   ensureSocket();
   return () => {
     jobListeners.delete(onEvent);
+  };
+}
+
+/** Subscribe to live upload progress. Returns an unsubscribe function. */
+export function connectUploadEvents(onEvent: UploadListener): () => void {
+  uploadListeners.add(onEvent);
+  ensureSocket();
+  return () => {
+    uploadListeners.delete(onEvent);
   };
 }
 

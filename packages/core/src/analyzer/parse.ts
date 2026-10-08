@@ -3,22 +3,13 @@
  * Pure functions, no I/O — unit-testable.
  */
 
-const VIDEO_EXTS = new Set([
-  ".mkv",
-  ".mp4",
-  ".avi",
-  ".mov",
-  ".wmv",
-  ".flv",
-  ".m4v",
-  ".mpg",
-  ".mpeg",
-  ".ts",
-  ".m2ts",
-  ".webm",
-]);
+import {
+  extname,
+  isSubtitleFileName,
+  isVideoFileName,
+} from "@droparr/shared";
 
-const SUBTITLE_EXTS = new Set([".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt"]);
+export { extname };
 
 /** Files that should never be treated as media. */
 const JUNK_PATTERNS = [
@@ -33,12 +24,11 @@ const JUNK_PATTERNS = [
 ];
 
 export function isVideoFile(name: string): boolean {
-  const ext = extname(name);
-  return VIDEO_EXTS.has(ext);
+  return isVideoFileName(name);
 }
 
 export function isSubtitleFile(name: string): boolean {
-  return SUBTITLE_EXTS.has(extname(name));
+  return isSubtitleFileName(name);
 }
 
 export function isJunkFile(name: string): boolean {
@@ -47,11 +37,6 @@ export function isJunkFile(name: string): boolean {
 
 export function isMediaFile(name: string): boolean {
   return (isVideoFile(name) || isSubtitleFile(name)) && !isJunkFile(name);
-}
-
-export function extname(name: string): string {
-  const i = name.lastIndexOf(".");
-  return i === -1 ? "" : name.slice(i).toLowerCase();
 }
 
 /** Release/quality tags stripped when cleaning titles. */

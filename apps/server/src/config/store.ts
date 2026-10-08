@@ -140,6 +140,7 @@ export class ConfigStore {
 
   async updateSettings(patch: {
     stagingDir?: string;
+    uploads?: DroparrConfig["uploads"];
     jellyfin?: DroparrConfig["jellyfin"];
     llm?: DroparrConfig["llm"];
   }): Promise<DroparrConfig> {
@@ -148,6 +149,9 @@ export class ConfigStore {
     // (e.g. saving the Jellyfin URL must keep its API key).
     if (patch.jellyfin) {
       next.jellyfin = { ...this.config.jellyfin, ...patch.jellyfin };
+    }
+    if (patch.uploads) {
+      next.uploads = { ...this.config.uploads, ...patch.uploads };
     }
     if (patch.llm) {
       next.llm = { ...this.config.llm, ...patch.llm };

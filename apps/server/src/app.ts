@@ -12,6 +12,9 @@ import { join } from "node:path";
 import { ConfigStore } from "./config/store.js";
 import { Db } from "./db.js";
 import { JobRegistry } from "./jobs.js";
+import { UploadEventBus } from "./uploads/events.js";
+import { UploadLocks } from "./uploads/locks.js";
+import { resolveUploadSettings } from "./uploads/settings.js";
 import { SessionService } from "./auth/sessions.js";
 import { LoginThrottle } from "./auth/throttle.js";
 import { AuthEvents, type SessionRevokedEvent } from "./auth/events.js";
@@ -23,6 +26,7 @@ import { fsRoutes } from "./routes/fs.js";
 import { importRoutes } from "./routes/import.js";
 import { historyRoutes } from "./routes/history.js";
 import { settingsRoutes } from "./routes/settings.js";
+import { uploadRoutes } from "./routes/uploads.js";
 
 export interface BuildAppOptions {
   dataDir?: string;
@@ -37,6 +41,8 @@ export interface BuiltApp {
   config: ConfigStore;
   db: Db;
   jobs: JobRegistry;
+  uploads: UploadEventBus;
+  uploadLocks: UploadLocks;
   authEvents: AuthEvents;
 }
 
@@ -48,6 +54,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
   );
   const db = new Db(join(dataDir, "droparr.db"));
   const jobs = new JobRegistry();
+  const uploads = new UploadEventBus();
+  const uploadLocks = new UploadLocks();
   const authEvents = new AuthEvents();
   const sessions = new SessionService(db);
   const throttle = new LoginThrottle(db);
@@ -67,7 +75,16 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
     .map((s) => s.trim())
     .filter(Boolean);
   if (devOrigins.length > 0) {
-    await app.register(cors, { origin: devOrigins, credentials: true });
+    await app.register(cors, {
+      origin: devOrigins,
+      credentials: true,
+      exposedHeaders: [
+        "Location",
+        "Upload-Offset",
+        "Upload-Length",
+        "Tus-Resumable",
+      ],
+    });
   }
   await app.register(cookie);
   // Per-route limits only (see the login route); no global default.
@@ -80,13 +97,24 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
   authRoutes(app, { config, db, sessions, throttle, authEvents });
   instanceRoutes(app, config);
   categoryRoutes(app, config);
-  fsRoutes(app);
+  fsRoutes(app, {
+    extraRoots: () => [
+      resolveUploadSettings(config.get(), dataDir).quarantineDir,
+    ],
+  });
   importRoutes(app, { config, db, jobs });
   historyRoutes(app, db);
-  settingsRoutes(app, config);
+  settingsRoutes(app, config, dataDir);
+  uploadRoutes(app, {
+    db,
+    events: uploads,
+    locks: uploadLocks,
+    getSettings: () => resolveUploadSettings(config.get(), dataDir),
+  });
 
-  // Live progress stream. Every job event is broadcast; the client filters
-  // by jobId. `GET /api/jobs/:id` replays events after a reconnect.
+  // Live progress stream. Every job/upload event is broadcast; job clients
+  // filter by jobId, upload clients by dropId. `GET /api/jobs/:id` replays
+  // job events after a reconnect.
   // Unauthenticated upgrades are closed with 4401; when the session behind a
   // socket is revoked the socket is told and closed immediately.
   app.get("/api/ws", { websocket: true }, (socket, req) => {
@@ -96,7 +124,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
       return;
     }
 
-    const onEvent = (event: unknown) => {
+    const onJobEvent = (event: unknown) => {
+      if (socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: "job", ...(event as object) }));
+      }
+    };
+    const onUploadEvent = (event: unknown) => {
       if (socket.readyState === 1) {
         socket.send(JSON.stringify(event));
       }
@@ -109,10 +142,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
       socket.close(4401, "Session revoked");
     };
 
-    jobs.on("event", onEvent);
+    jobs.on("event", onJobEvent);
+    uploads.on("event", onUploadEvent);
     authEvents.on("session-revoked", onRevoked);
     socket.on("close", () => {
-      jobs.off("event", onEvent);
+      jobs.off("event", onJobEvent);
+      uploads.off("event", onUploadEvent);
       authEvents.off("session-revoked", onRevoked);
     });
   });
@@ -136,5 +171,5 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
     }
   }
 
-  return { app, config, db, jobs, authEvents };
+  return { app, config, db, jobs, uploads, uploadLocks, authEvents };
 }

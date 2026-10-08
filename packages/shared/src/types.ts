@@ -68,10 +68,20 @@ export interface Category {
   seriesType: SeriesType;
 }
 
+export interface UploadSettings {
+  /** Where browser uploads land before staging. Defaults to <dataDir>/quarantine. */
+  quarantineDir?: string;
+  /** Per-file cap in bytes; 0 = unlimited. */
+  maxFileSizeBytes?: number;
+  /** Per-drop (submission) cap in bytes; 0 = unlimited. */
+  maxSubmissionSizeBytes?: number;
+}
+
 export interface DroparrConfig {
   instances: Instance[];
   categories: Category[];
   stagingDir: string;
+  uploads?: UploadSettings;
   jellyfin?: {
     baseUrl: string;
     apiKey?: string;

@@ -2,12 +2,14 @@ import type { FastifyInstance } from "fastify";
 import { stat } from "node:fs/promises";
 import { z } from "zod";
 import { JellyfinClient } from "@droparr/core";
-import { jellyfinBaseUrlSchema } from "@droparr/shared";
+import { jellyfinBaseUrlSchema, uploadSettingsSchema } from "@droparr/shared";
 import type { ConfigStore } from "../config/store.js";
 import { buildExport, validateImport } from "../config/import.js";
+import { resolveUploadSettings } from "../uploads/settings.js";
 
 const settingsSchema = z.object({
   stagingDir: z.string().optional(),
+  uploads: uploadSettingsSchema.optional(),
   jellyfin: z
     .object({ baseUrl: jellyfinBaseUrlSchema, apiKey: z.string().optional() })
     .optional(),
@@ -16,15 +18,27 @@ const settingsSchema = z.object({
     .optional(),
 });
 
-export function settingsRoutes(app: FastifyInstance, config: ConfigStore): void {
-  app.get("/api/settings", async () => config.get());
+export function settingsRoutes(
+  app: FastifyInstance,
+  config: ConfigStore,
+  dataDir: string,
+): void {
+  // Return the upload policy with defaults resolved so the client can
+  // pre-flight file sizes and show the quarantine location.
+  const withResolvedUploads = () => ({
+    ...config.get(),
+    uploads: resolveUploadSettings(config.get(), dataDir),
+  });
+
+  app.get("/api/settings", async () => withResolvedUploads());
 
   app.put("/api/settings", async (req, reply) => {
     const parsed = settingsSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: parsed.error.flatten() });
     }
-    return config.updateSettings(parsed.data);
+    await config.updateSettings(parsed.data);
+    return withResolvedUploads();
   });
 
   /** Connection feedback for the Settings → Jellyfin section (admin only). */
