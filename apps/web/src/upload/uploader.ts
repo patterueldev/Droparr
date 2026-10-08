@@ -40,7 +40,21 @@ export function createUpload(options: CreateUploadOptions): tus.Upload {
       options.onProgress(bytesSent, bytesTotal ?? options.file.size);
     },
     onSuccess: () => options.onSuccess(),
-    onError: (error) => options.onError(error.message),
+    onError: (error) => {
+      // 507 = the server refused/aborted the upload because the volume is
+      // full (it also removed any partial file). tus's own message is
+      // opaque, so surface something actionable.
+      const response = (
+        error as { originalResponse?: { getStatus(): number } }
+      ).originalResponse;
+      if (response?.getStatus() === 507) {
+        options.onError(
+          "Server storage is full — the upload was stopped and any partial file removed.",
+        );
+        return;
+      }
+      options.onError(error.message);
+    },
     onUploadUrlAvailable: () => {
       if (upload.url) options.onUploadUrl?.(upload.url);
     },
