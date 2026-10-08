@@ -11,6 +11,12 @@ services:
       # (configure the same path in Settings → Staging directory).
       - DROPARR_DATA=/data
       - DROPARR_CONFIG=/config/config.json
+      # Run as your media stack's PUID/PGID (must own ./config and be able to
+      # write the quarantine uploads). Defaults to 1000:1000.
+      - PUID=1000
+      - PGID=1000
+      # File mode mask for new files/dirs. 022 = owner write, group/other read.
+      - UMASK=022
       # Restrict the server-side folder browser (colon-separated).
       # - DROPARR_BROWSE_ROOTS=/incoming:/media
       # *arr request timeout in ms (default 30000) — raise for slow VPNs.

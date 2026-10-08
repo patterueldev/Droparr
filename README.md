@@ -63,6 +63,15 @@ docker compose up -d --build
 The server serves the built UI and the API on a single port (`3100`). Configure
 instances, categories and the staging directory in **Settings** on first run.
 
+Set `PUID`/`PGID` (default `1000:1000`) to the user that owns `./config` and
+that your \*arr stack runs as, so quarantine uploads, config writes and SQLite
+files stay readable by everyone involved; `UMASK` (default `022`) controls the
+mode of newly created files. Settings → **Uploads & disk** covers the
+quarantine directory, per-file and per-submission caps, the minimum free space
+kept on the volume (uploads are refused/aborted below it), and the retention
+window for abandoned and finished drops (default 7 days) with a manual
+"Run cleanup now" action.
+
 First login: open the UI — Droparr asks for your Jellyfin URL first (wizard
 lands in M2.2), then sign in with your Jellyfin account. Jellyfin admins become
 Droparr admins; other accounts can sign in and manage their own sessions, while
