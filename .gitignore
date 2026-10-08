@@ -1,16 +1,8 @@
-# dependencies
-node_modules/
-
-# builds
-dist/
-coverage/
-*.tsbuildinfo
-
-# local data & secrets
-data/
+node_modules
+dist
+*.db
+*.db-journal
 .env
-.env.*
-
-# logs & os
-*.log
+.env.local
 .DS_Store
+*.log
