@@ -14,7 +14,7 @@
 //
 // Test titles are verified absent from the real libraries; imports go into
 // isolated /media-03/DROPARR-TEST root folders (see setup.mjs).
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { arr, droparr, env, sleep, ssh } from "./lib.mjs";
@@ -574,7 +574,7 @@ async function scenarioCopy(ctx, state) {
     match: { tmdbId: match.tmdbId, title: match.title },
     importedFile: movie.movieFile?.path,
     history: history.result,
-    stagingKept: stagingNote(staging),
+    stagingKept: staging === undefined ? "not checked (no SSH_HOST)" : staging,
     jobEvents: job.events,
   };
 }
@@ -591,53 +591,29 @@ const scenarios = [
 // ---------------------------------------------------------------- cleanup
 
 async function cleanup() {
-  const statePath = join(here, ".work", "last-run.json");
-  check(existsSync(statePath), "No .work/last-run.json — run the scenarios first");
-  const state = JSON.parse(readFileSync(statePath, "utf8"));
-
-  for (const tmdbId of [...new Set(state.added?.radarr ?? [])]) {
-    const movie = (await arr("radarr_movies", "/api/v3/movie")).find(
-      (m) => m.tmdbId === tmdbId,
-    );
-    if (!movie) {
-      console.log(`— movie ${tmdbId} already gone`);
-      continue;
-    }
-    // Never touch titles outside the isolated test root.
+  // Remove every title under the isolated test roots (they exist for
+  // validation only) — covers titles added by manual/UI runs too.
+  for (const movie of await arr("radarr_movies", "/api/v3/movie")) {
     if (!String(movie.path ?? "").startsWith(`${env("RADARR_MOVIES_ROOT")}/`)) {
-      console.log(`— skipped "${movie.title}" (not in the test root)`);
       continue;
     }
     await arr("radarr_movies", `/api/v3/movie/${movie.id}?deleteFiles=true`, {
       method: "DELETE",
     });
-    console.log(`✓ removed movie "${movie.title}" (${tmdbId}) with files`);
+    console.log(`✓ removed movie "${movie.title}" with files`);
   }
 
-  for (const tvdbId of [...new Set(state.added?.sonarr ?? [])]) {
-    const tv = (await arr("sonarr_tv", "/api/v3/series")).find(
-      (s) => s.tvdbId === tvdbId,
-    );
-    const anime = tv
-      ? undefined
-      : (await arr("sonarr_anime", "/api/v3/series")).find(
-          (s) => s.tvdbId === tvdbId,
-        );
-    const found = tv ?? anime;
-    const role = tv ? "sonarr_tv" : "sonarr_anime";
-    const root = tv ? env("SONARR_TV_ROOT") : env("SONARR_ANIME_ROOT");
-    if (!found) {
-      console.log(`— series ${tvdbId} already gone`);
-      continue;
+  for (const [role, root] of [
+    ["sonarr_tv", env("SONARR_TV_ROOT")],
+    ["sonarr_anime", env("SONARR_ANIME_ROOT")],
+  ]) {
+    for (const series of await arr(role, "/api/v3/series")) {
+      if (!String(series.path ?? "").startsWith(`${root}/`)) continue;
+      await arr(role, `/api/v3/series/${series.id}?deleteFiles=true`, {
+        method: "DELETE",
+      });
+      console.log(`✓ removed series "${series.title}" with files`);
     }
-    if (!String(found.path ?? "").startsWith(`${root}/`)) {
-      console.log(`— skipped "${found.title}" (not in the test root)`);
-      continue;
-    }
-    await arr(role, `/api/v3/series/${found.id}?deleteFiles=true`, {
-      method: "DELETE",
-    });
-    console.log(`✓ removed series "${found.title}" (${tvdbId}) with files`);
   }
 
   const host = env("STAGING_HOST_DIR", "");
@@ -645,7 +621,7 @@ async function cleanup() {
     ssh(`find '${host}' -mindepth 1 -maxdepth 1 -exec rm -rf {} +`);
     console.log("✓ staging swept");
   }
-  console.log("Note: test root folders are left in place (harmless, empty).");
+  console.log("Note: test root folders and fixture drops are left in place.");
 }
 
 // ---------------------------------------------------------------- main
