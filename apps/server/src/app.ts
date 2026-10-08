@@ -111,7 +111,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
     ],
   });
   importRoutes(app, { config, db, jobs });
-  historyRoutes(app, db);
+  historyRoutes(app, { db, config });
   settingsRoutes(app, config, dataDir);
   uploadRoutes(app, {
     db,

@@ -55,7 +55,12 @@ describe("runImport (mock Sonarr)", () => {
         }
         if (url === "/api/v3/series" && req.method === "POST") {
           return res.end(
-            JSON.stringify({ id: 7, title: body.title, tvdbId: body.tvdbId }),
+            JSON.stringify({
+              id: 7,
+              title: body.title,
+              tvdbId: body.tvdbId,
+              titleSlug: "breaking-bad",
+            }),
           );
         }
         if (url.startsWith("/api/v3/episode")) {
@@ -257,12 +262,20 @@ describe("runImport (mock Sonarr)", () => {
     );
     expect(staged.length).toBe(64);
 
-    // History recorded as partial (one file rejected).
+    // History recorded as partial (one file rejected) with the link
+    // coordinates and rejection reasons persisted.
     const history = db.listHistory();
     expect(history).toHaveLength(1);
     expect(history[0].result).toBe("partial");
     expect(history[0].title).toBe("Breaking Bad");
     expect(history[0].matchedId).toBe(7);
+    expect(history[0].titleSlug).toBe("breaking-bad");
+    expect(history[0].rejectedFiles).toEqual([
+      {
+        path: expect.stringContaining("S01E02.1080p.WEB-DL.mkv"),
+        reasons: ["Sample"],
+      },
+    ]);
   });
 
   it("fails cleanly when the category does not exist", async () => {
@@ -367,5 +380,14 @@ describe("runImport (mock Sonarr)", () => {
       (await stat(join(stagingDir, "AllRejected Show"))).isDirectory(),
     ).toBe(true);
     expect(events.some((e) => e.phase === "cleanup")).toBe(false);
+
+    // The failed history entry still carries the link coordinates and the
+    // rejection reasons, so the UI can show them without the job log.
+    const history = db.listHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0].result).toBe("failed");
+    expect(history[0].matchedId).toBe(7);
+    expect(history[0].titleSlug).toBe("breaking-bad");
+    expect(history[0].rejectedFiles?.[0]?.reasons).toEqual(["Sample"]);
   });
 });

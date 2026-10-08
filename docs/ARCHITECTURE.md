@@ -47,7 +47,9 @@ Submission { id, submitterId,
 User      { id, jellyfinUserId, name, role: "admin" | "submitter",
             trusted: boolean, blocked: boolean }
 
-HistoryEntry { id, instanceId, kind, title, year, matchedId, files, result, timestamps }
+HistoryEntry { id, instanceId, kind, title, year, matchedId, titleSlug?, files,
+               rejectedFiles?, result, timestamps }
+             // instanceName/link are resolved from config when read
 ```
 
 ## Import pipeline
