@@ -32,6 +32,13 @@ export interface AuthFailure {
   lockedUntil?: string;
 }
 
+/** First-run setup lock. `completedAt` is null until the wizard finishes. */
+export interface SetupState {
+  completedAt?: string;
+  adminUserId?: string;
+  createdAt: string;
+}
+
 export class Db {
   private readonly db: Database.Database;
 
@@ -104,6 +111,13 @@ export class Db {
         failures INTEGER NOT NULL,
         windowStart TEXT NOT NULL,
         lockedUntil TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS setup (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        completedAt TEXT,
+        adminUserId TEXT,
+        createdAt TEXT NOT NULL
       );
     `);
   }
@@ -416,6 +430,85 @@ export class Db {
   clearAuthFailure(key: string): void {
     this.db.prepare(`DELETE FROM auth_failures WHERE key = ?`).run(key);
   }
+
+  // --- First-run setup ---
+
+  getSetupState(): SetupState | undefined {
+    const row = this.db
+      .prepare(`SELECT * FROM setup WHERE id = 1`)
+      .get() as SetupRow | undefined;
+    return row
+      ? {
+          completedAt: row.completedAt ?? undefined,
+          adminUserId: row.adminUserId ?? undefined,
+          createdAt: row.createdAt,
+        }
+      : undefined;
+  }
+
+  isSetupComplete(): boolean {
+    const row = this.db
+      .prepare(`SELECT completedAt FROM setup WHERE id = 1`)
+      .get() as { completedAt: string | null } | undefined;
+    return !!row?.completedAt;
+  }
+
+  hasAdminUser(): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 AS ok FROM users WHERE role = 'admin' LIMIT 1`)
+      .get() as { ok: number } | undefined;
+    return !!row;
+  }
+
+  /**
+   * Create the single setup row on first boot. Installs that predate the
+   * wizard (an admin user and a Jellyfin URL already exist) are backfilled as
+   * complete so upgrading never reopens first-run setup; a fresh install
+   * starts with `completedAt = NULL`.
+   */
+  initializeSetupState(input: {
+    adminExists: boolean;
+    jellyfinConfigured: boolean;
+    at?: string;
+  }): SetupState {
+    const existing = this.getSetupState();
+    if (existing) return existing;
+
+    const at = input.at ?? new Date().toISOString();
+    const completedAt =
+      input.adminExists && input.jellyfinConfigured ? at : null;
+    this.db
+      .prepare(
+        `INSERT INTO setup (id, completedAt, adminUserId, createdAt)
+         VALUES (1, ?, NULL, ?)`,
+      )
+      .run(completedAt, at);
+    return {
+      completedAt: completedAt ?? undefined,
+      createdAt: at,
+    };
+  }
+
+  /**
+   * Mark setup complete and record the claiming admin. Returns false when it
+   * was already completed (two browsers racing the wizard's last step).
+   */
+  completeSetup(
+    adminUserId: string,
+    at: string = new Date().toISOString(),
+  ): boolean {
+    if (this.isSetupComplete()) return false;
+    this.db
+      .prepare(
+        `INSERT INTO setup (id, completedAt, adminUserId, createdAt)
+         VALUES (1, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           completedAt = excluded.completedAt,
+           adminUserId = excluded.adminUserId`,
+      )
+      .run(at, adminUserId, at);
+    return true;
+  }
 }
 
 interface HistoryRow {
@@ -458,6 +551,13 @@ interface AuthFailureRow {
   failures: number;
   windowStart: string;
   lockedUntil: string | null;
+}
+
+interface SetupRow {
+  id: number;
+  completedAt: string | null;
+  adminUserId: string | null;
+  createdAt: string;
 }
 
 function rowToEntry(row: HistoryRow): HistoryEntry {
