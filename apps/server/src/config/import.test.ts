@@ -159,4 +159,23 @@ describe("validateImport", () => {
       expect(result.warnings.join(" ")).toContain("Mismatch");
     }
   });
+
+  it("warns when an in-use instance cannot see the staging dir", () => {
+    const cfg: DroparrConfig = {
+      ...VALID_CONFIG,
+      instances: [
+        {
+          ...VALID_CONFIG.instances[0],
+          pathMappings: [{ app: "/elsewhere", remote: "/media/elsewhere" }],
+        },
+      ],
+    };
+    const result = validateImport(cfg);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const warnings = result.warnings.join(" ");
+      expect(warnings).toContain("TV Sonarr");
+      expect(warnings).toContain("/data/staging");
+    }
+  });
 });

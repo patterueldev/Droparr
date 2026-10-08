@@ -4,7 +4,7 @@ import {
   SETTINGS_EXPORT_FORMAT_VERSION,
   type DroparrConfig,
 } from "@droparr/shared";
-import { validateMappings } from "@droparr/core";
+import { validateMappings, stagingCoverageIssues } from "@droparr/core";
 
 export interface ExportResult {
   app: "droparr";
@@ -113,6 +113,16 @@ export function validateImport(payload: unknown): ImportResult {
         `Category "${cat.name}" kind corrected to match instance "${inst.name}" (${inst.kind})`,
       );
       cat.kind = inst.kind;
+    }
+  }
+
+  // Early staging-visibility warning: an instance can't import what it can't
+  // see, and an imported file is the most likely moment to carry stale paths.
+  // (An unset staging dir is reported separately by the caller, which also
+  // checks the filesystem.)
+  for (const issue of stagingCoverageIssues(config)) {
+    if (issue.code === "staging-dir-unmapped") {
+      warnings.push([issue.message, issue.suggestion].filter(Boolean).join(" "));
     }
   }
 

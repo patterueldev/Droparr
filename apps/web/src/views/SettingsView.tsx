@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Category, Instance } from "@droparr/shared";
+import type { Category, Instance, StagingCheckIssue } from "@droparr/shared";
 import { api } from "../api";
 
 export default function SettingsView() {
@@ -17,17 +17,23 @@ export default function SettingsView() {
     queryKey: ["categories"],
     queryFn: api.categories,
   });
+  const { data: stagingCheck } = useQuery({
+    queryKey: ["staging-check"],
+    queryFn: api.settingsStagingCheck,
+  });
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["instances"] });
     void queryClient.invalidateQueries({ queryKey: ["categories"] });
     void queryClient.invalidateQueries({ queryKey: ["settings"] });
+    void queryClient.invalidateQueries({ queryKey: ["staging-check"] });
   };
 
   return (
     <div className="space-y-8">
       <StagingSection
         stagingDir={settings?.stagingDir ?? ""}
+        issues={stagingCheck?.issues ?? []}
         onSaved={refresh}
       />
       <JellyfinSection jellyfin={settings?.jellyfin} onSaved={refresh} />
@@ -65,9 +71,11 @@ function Section({
 
 function StagingSection({
   stagingDir,
+  issues,
   onSaved,
 }: {
   stagingDir: string;
+  issues: StagingCheckIssue[];
   onSaved: () => void;
 }) {
   const [value, setValue] = useState(stagingDir);
@@ -115,6 +123,19 @@ function StagingSection({
         </button>
       </div>
       {status && <p className="text-xs text-zinc-400">{status}</p>}
+
+      {issues.length > 0 && (
+        <div className="rounded-lg border border-amber-900 bg-amber-950/40 px-4 py-3 space-y-2">
+          {issues.map((issue, i) => (
+            <div key={`${issue.code}-${issue.instanceId ?? i}`} className="space-y-0.5">
+              <p className="text-sm text-amber-300">{issue.message}</p>
+              {issue.suggestion && (
+                <p className="text-xs text-amber-400/80">{issue.suggestion}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </Section>
   );
 }
