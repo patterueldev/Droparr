@@ -91,7 +91,11 @@ export function uploadRoutes(app: FastifyInstance, deps: UploadRouteDeps): void 
           total += chunk.length;
           if (total > CREATION_BODY_LIMIT) {
             payload.destroy();
-            done(new Error("Creation request body is too large"));
+            done(
+              Object.assign(new Error("Creation request body is too large"), {
+                statusCode: 413,
+              }),
+            );
             return;
           }
           chunks.push(chunk);

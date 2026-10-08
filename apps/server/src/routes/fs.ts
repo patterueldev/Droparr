@@ -15,16 +15,21 @@ import { walkMediaFiles } from "../fs/walk.js";
  */
 export function fsRoutes(
   app: FastifyInstance,
-  options: { extraRoots?: string[] } = {},
+  options: { extraRoots?: string[] | (() => string[]) } = {},
 ): void {
-  const roots = [
-    ...(process.env.DROPARR_BROWSE_ROOTS ?? "").split(":"),
-    ...(options.extraRoots ?? []),
-  ]
+  const envRoots = (process.env.DROPARR_BROWSE_ROOTS ?? "")
+    .split(":")
     .filter(Boolean)
     .map((r) => resolve(r));
 
   function isAllowed(p: string): boolean {
+    // Extra roots may be dynamic (the upload quarantine dir can change via
+    // Settings), so they are resolved per request.
+    const extra =
+      typeof options.extraRoots === "function"
+        ? options.extraRoots()
+        : (options.extraRoots ?? []);
+    const roots = [...envRoots, ...extra].filter(Boolean).map((r) => resolve(r));
     if (roots.length === 0) return true;
     const resolved = resolve(p);
     return roots.some(

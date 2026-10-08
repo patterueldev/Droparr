@@ -3,8 +3,9 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { UploadEvent } from "@droparr/shared";
+import { buildApp } from "../app.js";
 import { Db } from "../db.js";
 import { UploadEventBus } from "../uploads/events.js";
 import { UploadLocks } from "../uploads/locks.js";
@@ -228,6 +229,17 @@ describe("upload creation", () => {
     );
     expect(res.statusCode).toBe(201);
   });
+
+  it("rejects an oversized creation body with 413", async () => {
+    const h = await buildHarness({ maxChunk: 4096 });
+    const res = await createUpload(
+      h.app,
+      { filename: "a.mkv", size: 10 },
+      { "content-type": "application/offset+octet-stream" },
+      "x".repeat(66_000),
+    );
+    expect(res.statusCode).toBe(413);
+  });
 });
 
 describe("chunked upload", () => {
@@ -442,5 +454,116 @@ describe("termination and listing", () => {
     expect(res.headers["tus-version"]).toBe("1.0.0");
     expect(res.headers["tus-extension"]).toContain("creation");
     expect(res.headers["tus-extension"]).toContain("termination");
+  });
+});
+
+describe("uploads behind the auth guard", () => {
+  it("401s without a session and uploads end-to-end once logged in", async () => {
+    const fetchMock = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/System/Info/Public")) {
+          return Response.json({
+            ServerName: "Jellyfin",
+            Version: "10.10.3",
+            Id: "srv-1",
+          });
+        }
+        if (url.endsWith("/Users/AuthenticateByName")) {
+          const body = JSON.parse(String(init?.body ?? "{}")) as {
+            Username?: string;
+            Pw?: string;
+          };
+          if (body.Username !== "admin" || body.Pw !== "hunter2") {
+            return Response.json({}, { status: 401 });
+          }
+          return Response.json({
+            User: {
+              Id: "jf-admin",
+              Name: "admin",
+              Policy: { IsAdministrator: true },
+            },
+            AccessToken: "tok",
+            ServerId: "srv-1",
+          });
+        }
+        return Response.json({}, { status: 404 });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tmp = await mkdtemp(join(tmpdir(), "droparr-uploads-auth-"));
+    const built = await buildApp({
+      dataDir: tmp,
+      configPath: join(tmp, "config.json"),
+      serveWeb: false,
+      logger: false,
+    });
+    cleanups.push(async () => {
+      await built.app.close();
+      await rm(tmp, { recursive: true, force: true });
+      vi.unstubAllGlobals();
+    });
+
+    const boot = await built.app.inject({
+      method: "POST",
+      url: "/api/auth/jellyfin",
+      payload: { baseUrl: "http://jellyfin.local:8096" },
+    });
+    expect(boot.statusCode).toBe(200);
+
+    const login = await built.app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "admin", password: "hunter2" },
+    });
+    expect(login.statusCode).toBe(200);
+    const rawCookie = login.headers["set-cookie"];
+    const setCookie = Array.isArray(rawCookie)
+      ? String(rawCookie[0])
+      : String(rawCookie);
+    const cookie = setCookie.split(";")[0]!;
+
+    const unauthenticated = await createUpload(built.app, {
+      filename: "a.mkv",
+      size: 10,
+    });
+    expect(unauthenticated.statusCode).toBe(401);
+
+    const content = pattern(1500);
+    const created = await built.app.inject({
+      method: "POST",
+      url: "/api/uploads",
+      headers: {
+        ...TUS_HEADERS,
+        cookie,
+        "upload-length": String(content.length),
+        "upload-metadata": encodeMetadata({
+          filename: "movie.mkv",
+          dropid: "authdrop",
+        }),
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const location = created.headers.location as string;
+
+    const patched = await built.app.inject({
+      method: "PATCH",
+      url: location,
+      headers: {
+        ...TUS_HEADERS,
+        cookie,
+        "content-type": "application/offset+octet-stream",
+        "upload-offset": "0",
+      },
+      payload: content,
+    });
+    expect(patched.statusCode).toBe(204);
+    expect(patched.headers["upload-offset"]).toBe(String(content.length));
+
+    const onDisk = await readFile(
+      join(tmp, "quarantine", "authdrop", "movie.mkv"),
+    );
+    expect(onDisk.equals(content)).toBe(true);
   });
 });
