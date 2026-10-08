@@ -34,7 +34,7 @@ echo "==> Checking server prerequisites"
 ssh "$SSH_HOST" 'command -v git >/dev/null && command -v docker >/dev/null && docker compose version >/dev/null'
 
 echo "==> Preparing directories on $SSH_HOST"
-ssh "$SSH_HOST" "mkdir -p '$REMOTE_APP_DIR' '$DATA_HOST_DIR/config' '$DATA_HOST_DIR/data' '$STAGING_HOST_DIR' '$DROPS_HOST_DIR' '$TEST_ROOT_HOST_DIR' && chown -R 1000:1000 '$DATA_HOST_DIR' '$STAGING_HOST_DIR' '$DROPS_HOST_DIR' '$TEST_ROOT_HOST_DIR'"
+ssh "$SSH_HOST" "mkdir -p '$REMOTE_APP_DIR' '$DATA_HOST_DIR/config' '$DATA_HOST_DIR/data' '$STAGING_HOST_DIR' '$DROPS_HOST_DIR' '$TEST_ROOT_HOST_DIR' && { chown -R 1000:1000 '$DATA_HOST_DIR' '$STAGING_HOST_DIR' '$DROPS_HOST_DIR' '$TEST_ROOT_HOST_DIR' 2>/dev/null || true; }"
 
 echo "==> Cloning/updating Droparr ($branch)"
 ssh "$SSH_HOST" "if [ -d '$REMOTE_APP_DIR/.git' ]; then git -C '$REMOTE_APP_DIR' fetch origin && git -C '$REMOTE_APP_DIR' checkout '$branch' && git -C '$REMOTE_APP_DIR' pull --ff-only origin '$branch'; else git clone --branch '$branch' https://github.com/patterueldev/Droparr.git '$REMOTE_APP_DIR'; fi"
