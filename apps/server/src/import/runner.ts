@@ -14,6 +14,7 @@ import type {
   Category,
   FolderAnalysis,
   HistoryEntry,
+  HistoryRejectedFile,
   Instance,
 } from "@droparr/shared";
 import type { ConfigStore } from "../config/store.js";
@@ -75,6 +76,11 @@ export async function runImport(
   let instance: Instance | undefined;
   let analysis: FolderAnalysis | undefined;
   let files: Awaited<ReturnType<typeof walkMediaFiles>> | undefined;
+  // Recorded on the history entry (success and failure alike) so the UI can
+  // deep-link to the *arr title and show rejection reasons without logs.
+  let matchedId: number | undefined;
+  let titleSlug: string | undefined;
+  let rejectedFiles: HistoryRejectedFile[] = [];
 
   try {
     // --- Resolve category + instance -----------------------------------
@@ -156,7 +162,6 @@ export async function runImport(
             timeoutMs,
           });
 
-    let matchedId: number;
     if (instance.kind === "series") {
       const sonarr = client as SonarrClient;
       if (!req.match.tvdbId) throw new Error("Series match is missing tvdbId");
@@ -165,6 +170,7 @@ export async function runImport(
       );
       if (existing) {
         matchedId = existing.id;
+        titleSlug = existing.titleSlug;
         emit("adding", `"${existing.title}" is already in the library — import-only mode`);
       } else {
         const seasons = buildSeasonSelection(
@@ -184,10 +190,16 @@ export async function runImport(
           extra: req.match.extra,
         });
         matchedId = added.id;
+        titleSlug = added.titleSlug;
         emit("adding", `Added series "${added.title}" to ${instance.name}`);
         await waitForEpisodes(sonarr, added.id, seasons, (message) =>
           emit("adding", message),
         );
+      }
+      // The lookup passthrough covers the rare case the *arr response omits
+      // the slug; the UI then falls back to a plain (unlinked) title.
+      if (!titleSlug && typeof req.match.extra?.titleSlug === "string") {
+        titleSlug = req.match.extra.titleSlug;
       }
     } else {
       const radarr = client as RadarrClient;
@@ -224,6 +236,10 @@ export async function runImport(
     const ours = preflight.filter((item) => item.path && stagedRemotePaths.has(item.path));
     const rejected = ours.filter((i) => (i.rejections?.length ?? 0) > 0);
     const importable = ours.filter((i) => !(i.rejections?.length ?? 0));
+    rejectedFiles = rejected.map((r) => ({
+      path: r.path,
+      reasons: r.rejections?.map((x) => x.reason) ?? [],
+    }));
 
     if (importable.length === 0) {
       throw new Error(
@@ -240,12 +256,15 @@ export async function runImport(
       progress: 0,
     });
 
+    // The title was ensured above, so the id is definite here; the history
+    // entry keeps it as an optional coordinate.
+    const resolvedId: number = matchedId;
     let command: { id: number; status: string };
     if (instance.kind === "series") {
       const payload = importable.map((item) => ({
         path: item.path,
         folderName: item.folderName,
-        seriesId: item.series?.id ?? matchedId,
+        seriesId: item.series?.id ?? resolvedId,
         episodeIds: item.episodes?.map((e) => e.id) ?? [],
         quality: item.quality,
         languages: item.languages,
@@ -257,7 +276,7 @@ export async function runImport(
       const payload = importable.map((item) => ({
         path: item.path,
         folderName: item.folderName,
-        movieId: item.movie?.id ?? matchedId,
+        movieId: item.movie?.id ?? resolvedId,
         quality: item.quality,
         languages: item.languages,
         releaseGroup: item.releaseGroup,
@@ -284,7 +303,9 @@ export async function runImport(
       title: req.match.title,
       year: req.match.year,
       matchedId,
+      titleSlug,
       files: files.files,
+      rejectedFiles: rejectedFiles.length > 0 ? rejectedFiles : undefined,
       result: success
         ? rejected.length > 0
           ? "partial"
@@ -350,7 +371,10 @@ export async function runImport(
           kind: instance.kind,
           title: req.match.title,
           year: req.match.year,
+          matchedId,
+          titleSlug,
           files: files?.files ?? [],
+          rejectedFiles: rejectedFiles.length > 0 ? rejectedFiles : undefined,
           result: "failed",
           timestamps: { started: startedAt, completed: new Date().toISOString() },
         });

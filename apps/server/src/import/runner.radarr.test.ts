@@ -212,6 +212,9 @@ describe("runImport (mock Radarr)", () => {
     expect(history).toHaveLength(1);
     expect(history[0].result).toBe("success");
     expect(history[0].matchedId).toBe(11);
+    // Movies link by id — no series slug, no rejections.
+    expect(history[0].titleSlug).toBeUndefined();
+    expect(history[0].rejectedFiles).toBeUndefined();
   });
 
   it("imports only when the movie is already in the library (no duplicate add)", async () => {

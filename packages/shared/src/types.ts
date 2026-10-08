@@ -140,6 +140,12 @@ export interface Submission {
   updatedAt: string;
 }
 
+/** A staged file the *arr rejected during manual-import preflight. */
+export interface HistoryRejectedFile {
+  path: string;
+  reasons: string[];
+}
+
 export interface HistoryEntry {
   id: string;
   instanceId: string;
@@ -147,10 +153,18 @@ export interface HistoryEntry {
   title: string;
   year?: number;
   matchedId?: number;
+  /** Sonarr series slug — deep-link coordinate for `{baseUrl}/series/{titleSlug}`. */
+  titleSlug?: string;
   files: FileRef[];
+  /** Files rejected during preflight; absent when nothing was rejected. */
+  rejectedFiles?: HistoryRejectedFile[];
   result: "success" | "partial" | "failed";
   timestamps: {
     started: string;
     completed?: string;
   };
+  /** Response-only: instance name resolved from config when read. */
+  instanceName?: string;
+  /** Response-only: absolute *arr UI URL for the matched title. */
+  link?: string;
 }

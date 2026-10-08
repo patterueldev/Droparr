@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import type {
   FileRef,
   HistoryEntry,
+  HistoryRejectedFile,
   InstanceKind,
   Upload,
   UploadState,
@@ -106,6 +107,21 @@ export class Db {
         lockedUntil TEXT
       );
     `);
+
+    // Additive migrations for databases created before these columns existed
+    // (CREATE TABLE IF NOT EXISTS never alters an existing table).
+    this.ensureColumn("history", "titleSlug", "TEXT");
+    this.ensureColumn("history", "rejectedJson", "TEXT");
+  }
+
+  /** Add a column when an older database predates it (idempotent). */
+  private ensureColumn(table: string, column: string, type: string): void {
+    const columns = this.db
+      .prepare(`PRAGMA table_info(${table})`)
+      .all() as { name: string }[];
+    if (!columns.some((c) => c.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
   }
 
   // --- History ---
@@ -114,8 +130,8 @@ export class Db {
     this.db
       .prepare(
         `INSERT INTO history
-         (id, instanceId, kind, title, year, matchedId, filesJson, result, startedAt, completedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, instanceId, kind, title, year, matchedId, titleSlug, filesJson, rejectedJson, result, startedAt, completedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         entry.id,
@@ -124,7 +140,11 @@ export class Db {
         entry.title,
         entry.year ?? null,
         entry.matchedId ?? null,
+        entry.titleSlug ?? null,
         JSON.stringify(entry.files),
+        entry.rejectedFiles && entry.rejectedFiles.length > 0
+          ? JSON.stringify(entry.rejectedFiles)
+          : null,
         entry.result,
         entry.timestamps.started,
         entry.timestamps.completed ?? null,
@@ -425,7 +445,9 @@ interface HistoryRow {
   title: string;
   year: number | null;
   matchedId: number | null;
+  titleSlug: string | null;
   filesJson: string;
+  rejectedJson: string | null;
   result: string;
   startedAt: string;
   completedAt: string | null;
@@ -468,7 +490,11 @@ function rowToEntry(row: HistoryRow): HistoryEntry {
     title: row.title,
     year: row.year ?? undefined,
     matchedId: row.matchedId ?? undefined,
+    titleSlug: row.titleSlug ?? undefined,
     files: JSON.parse(row.filesJson) as FileRef[],
+    rejectedFiles: row.rejectedJson
+      ? (JSON.parse(row.rejectedJson) as HistoryRejectedFile[])
+      : undefined,
     result: row.result as HistoryEntry["result"],
     timestamps: {
       started: row.startedAt,

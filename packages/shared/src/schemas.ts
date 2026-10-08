@@ -130,6 +130,11 @@ export const submissionSchema = z.object({
   updatedAt: z.string().datetime(),
 });
 
+export const historyRejectedFileSchema = z.object({
+  path: z.string(),
+  reasons: z.array(z.string()),
+});
+
 export const historyEntrySchema = z.object({
   id: z.string().min(1),
   instanceId: z.string().min(1),
@@ -137,12 +142,18 @@ export const historyEntrySchema = z.object({
   title: z.string(),
   year: z.number().int().optional(),
   matchedId: z.number().int().optional(),
+  titleSlug: z.string().optional(),
   files: z.array(fileRefSchema),
+  rejectedFiles: z.array(historyRejectedFileSchema).optional(),
   result: z.enum(["success", "partial", "failed"]),
   timestamps: z.object({
     started: z.string().datetime(),
     completed: z.string().datetime().optional(),
   }),
+  /** Response-only: instance name resolved from config when read. */
+  instanceName: z.string().optional(),
+  /** Response-only: absolute *arr UI URL for the matched title. */
+  link: z.string().optional(),
 });
 
 /** Current settings export format version. */
