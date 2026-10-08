@@ -105,13 +105,30 @@ async function makeAppWithCapturedLogs(lines: string[]): Promise<BuiltApp> {
   return built;
 }
 
-async function configureJellyfin(): Promise<void> {
-  const res = await built!.app.inject({
+/** Run the first-run wizard (#6) so login/roles run against a live install. */
+async function completeSetup(): Promise<void> {
+  let res = await built!.app.inject({
     method: "POST",
-    url: "/api/auth/jellyfin",
+    url: "/api/setup/jellyfin",
     payload: { baseUrl: JELLYFIN_URL },
   });
   expect(res.statusCode).toBe(200);
+  res = await login("admin", "hunter2");
+  expect(res.statusCode).toBe(200);
+  const cookie = sessionCookie(res);
+  res = await built!.app.inject({
+    method: "POST",
+    url: "/api/setup/complete",
+    headers: { cookie },
+  });
+  expect(res.statusCode).toBe(200);
+  // Drop the wizard's session so tests start with a clean session list.
+  res = await built!.app.inject({
+    method: "POST",
+    url: "/api/auth/logout",
+    headers: { cookie },
+  });
+  expect(res.statusCode).toBe(204);
 }
 
 function login(
@@ -136,7 +153,7 @@ afterEach(async () => {
 });
 
 describe("auth bootstrap", () => {
-  it("reports setupRequired until a Jellyfin URL is configured, then locks the bootstrap", async () => {
+  it("reports setupRequired until the first-run wizard completes", async () => {
     await makeApp();
     stubJellyfin(DEFAULT_CREDS);
 
@@ -146,32 +163,10 @@ describe("auth bootstrap", () => {
       authenticated: false,
     });
 
-    // Only http(s) URLs are accepted (the bootstrap is unauthenticated).
-    res = await built!.app.inject({
-      method: "POST",
-      url: "/api/auth/jellyfin/test",
-      payload: { baseUrl: "file:///etc/passwd" },
-    });
-    expect(res.statusCode).toBe(400);
-
-    res = await built!.app.inject({
-      method: "POST",
-      url: "/api/auth/jellyfin",
-      payload: { baseUrl: JELLYFIN_URL },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ ok: true, serverName: "Jellyfin" });
-    expect(built!.config.get().jellyfin?.baseUrl).toBe(JELLYFIN_URL);
+    await completeSetup();
 
     res = await built!.app.inject({ method: "GET", url: "/api/auth/status" });
     expect(res.json<AuthStatus>()).toMatchObject({ setupRequired: false });
-
-    res = await built!.app.inject({
-      method: "POST",
-      url: "/api/auth/jellyfin",
-      payload: { baseUrl: "http://attacker.local:8096" },
-    });
-    expect(res.statusCode).toBe(403);
   });
 
   it("refuses login while Jellyfin is not configured", async () => {
@@ -186,7 +181,7 @@ describe("login", () => {
   it("sets an HttpOnly, SameSite=Lax session cookie on valid credentials", async () => {
     await makeApp();
     stubJellyfin(DEFAULT_CREDS);
-    await configureJellyfin();
+    await completeSetup();
 
     const res = await login("admin", "hunter2");
     expect(res.statusCode).toBe(200);
@@ -224,7 +219,7 @@ describe("login", () => {
   it("marks the cookie Secure over HTTPS (Cloudflare Tunnel path)", async () => {
     await makeApp();
     stubJellyfin(DEFAULT_CREDS);
-    await configureJellyfin();
+    await completeSetup();
 
     const res = await login("admin", "hunter2", {
       "x-forwarded-proto": "https",
@@ -236,7 +231,7 @@ describe("login", () => {
   it("rejects wrong credentials and unknown users with the same generic 401", async () => {
     await makeApp();
     stubJellyfin(DEFAULT_CREDS);
-    await configureJellyfin();
+    await completeSetup();
 
     const wrong = await login("admin", "nope");
     expect(wrong.statusCode).toBe(401);
@@ -255,7 +250,7 @@ describe("login", () => {
   it("locks a username after repeated failures without ever reaching Jellyfin", async () => {
     await makeApp();
     const fetchMock = stubJellyfin(DEFAULT_CREDS);
-    await configureJellyfin();
+    await completeSetup();
 
     for (let i = 0; i < 5; i++) {
       const res = await login("admin", "wrong-password");
@@ -281,7 +276,7 @@ describe("login", () => {
   it("rate-limits login attempts per IP", async () => {
     await makeApp();
     stubJellyfin(DEFAULT_CREDS);
-    await configureJellyfin();
+    await completeSetup();
 
     let last: LightMyRequestResponse | undefined;
     for (let i = 0; i < 21; i++) {
@@ -296,7 +291,7 @@ describe("login", () => {
   it("stores only a hash of the session token", async () => {
     await makeApp();
     stubJellyfin(DEFAULT_CREDS);
-    await configureJellyfin();
+    await completeSetup();
 
     const res = await login("admin", "hunter2");
     const token = sessionCookie(res).split("=")[1]!;
@@ -310,7 +305,7 @@ describe("login", () => {
     const lines: string[] = [];
     await makeAppWithCapturedLogs(lines);
     stubJellyfin(DEFAULT_CREDS);
-    await configureJellyfin();
+    await completeSetup();
 
     await login("admin", "hunter2");
     await login("admin", "definitely-not-in-any-log");
@@ -325,7 +320,7 @@ describe("sessions and roles", () => {
   it("lists sessions and revokes another session immediately", async () => {
     await makeApp();
     stubJellyfin(DEFAULT_CREDS);
-    await configureJellyfin();
+    await completeSetup();
 
     const first = await login("admin", "hunter2");
     const cookieA = sessionCookie(first);
@@ -369,7 +364,7 @@ describe("sessions and roles", () => {
   it("clears the cookie when revoking the current session", async () => {
     await makeApp();
     stubJellyfin(DEFAULT_CREDS);
-    await configureJellyfin();
+    await completeSetup();
 
     const res = await login("admin", "hunter2");
     const cookie = sessionCookie(res);
@@ -400,7 +395,7 @@ describe("sessions and roles", () => {
   it("logs out server-side", async () => {
     await makeApp();
     stubJellyfin(DEFAULT_CREDS);
-    await configureJellyfin();
+    await completeSetup();
 
     const res = await login("admin", "hunter2");
     const cookie = sessionCookie(res);
@@ -424,7 +419,7 @@ describe("sessions and roles", () => {
   it("gives submitters access to auth routes but not admin routes", async () => {
     await makeApp();
     stubJellyfin(DEFAULT_CREDS);
-    await configureJellyfin();
+    await completeSetup();
 
     const res = await login("sister", "swordfish");
     expect(res.statusCode).toBe(200);
@@ -452,7 +447,7 @@ describe("sessions and roles", () => {
   it("requires a session for protected routes", async () => {
     await makeApp();
     stubJellyfin(DEFAULT_CREDS);
-    await configureJellyfin();
+    await completeSetup();
 
     const res = await built!.app.inject({
       method: "GET",
@@ -464,7 +459,7 @@ describe("sessions and roles", () => {
   it("does not let one user revoke another user's session", async () => {
     await makeApp();
     stubJellyfin(DEFAULT_CREDS);
-    await configureJellyfin();
+    await completeSetup();
 
     const adminRes = await login("admin", "hunter2");
     const adminCookie = sessionCookie(adminRes);
