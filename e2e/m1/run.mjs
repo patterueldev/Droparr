@@ -66,6 +66,25 @@ function check(cond, message) {
   if (!cond) throw new Error(message);
 }
 
+/** Retry transient failures (the *arr metadata backends can be flaky/slow). */
+async function withRetry(fn, label, attempts = 3) {
+  let lastErr;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts) {
+        console.log(
+          `    … ${label} failed (attempt ${i}/${attempts}): ${err?.message ?? err}`,
+        );
+        await sleep(3000 * i);
+      }
+    }
+  }
+  throw lastErr;
+}
+
 async function context() {
   const settings = await droparr("/api/settings");
   check(
@@ -86,8 +105,12 @@ async function context() {
 }
 
 function lookup(instanceId, term) {
-  return droparr(
-    `/api/instances/${instanceId}/lookup?term=${encodeURIComponent(term)}`,
+  return withRetry(
+    () =>
+      droparr(
+        `/api/instances/${instanceId}/lookup?term=${encodeURIComponent(term)}`,
+      ),
+    `lookup "${term}"`,
   );
 }
 

@@ -13,6 +13,8 @@ services:
       - DROPARR_CONFIG=/config/config.json
       # Restrict the server-side folder browser (colon-separated).
       # - DROPARR_BROWSE_ROOTS=/incoming:/media
+      # *arr request timeout in ms (default 30000) — raise for slow VPNs.
+      # - DROPARR_ARR_TIMEOUT_MS=30000
     volumes:
       # Droparr's own state (SQLite history).
       - ./config:/config

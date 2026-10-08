@@ -141,10 +141,20 @@ export async function runImport(
 
     // --- Ensure the title exists in the library -------------------------
     emit("adding", `Ensuring "${req.match.title}" exists in ${instance.name}`);
+    // Optional deployment knob for slow *arr metadata backends (VPN, …).
+    const timeoutMs = Number(process.env.DROPARR_ARR_TIMEOUT_MS) || undefined;
     const client =
       instance.kind === "series"
-        ? new SonarrClient({ baseUrl: instance.baseUrl, apiKey: instance.apiKey })
-        : new RadarrClient({ baseUrl: instance.baseUrl, apiKey: instance.apiKey });
+        ? new SonarrClient({
+            baseUrl: instance.baseUrl,
+            apiKey: instance.apiKey,
+            timeoutMs,
+          })
+        : new RadarrClient({
+            baseUrl: instance.baseUrl,
+            apiKey: instance.apiKey,
+            timeoutMs,
+          });
 
     let matchedId: number;
     if (instance.kind === "series") {
