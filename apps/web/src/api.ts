@@ -10,9 +10,15 @@ async function request<T>(
   path: string,
   opts: { method?: string; body?: unknown } = {},
 ): Promise<T> {
+  // Only advertise a JSON content-type when there is a body — Fastify
+  // rejects empty bodies that claim to be JSON (FST_ERR_CTP_EMPTY_JSON_BODY).
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (opts.body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
   const res = await fetch(path, {
     method: opts.method ?? "GET",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
   if (!res.ok) {
