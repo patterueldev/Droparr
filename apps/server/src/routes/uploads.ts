@@ -206,8 +206,8 @@ export function uploadRoutes(app: FastifyInstance, deps: UploadRouteDeps): void 
       }
 
       // Disk guard: refuse new uploads when the quarantine volume is running
-      // low. 507 tells tus-js-client not to retry (unlike 5xx) and the UI
-      // surfaces the server message.
+      // low. 507 is 5xx, so the web uploader explicitly excludes it from its
+      // retries and surfaces the server message.
       if (settings.minFreeSpaceBytes > 0) {
         const free = await probeFreeBytes(deps, req.log);
         if (free < settings.minFreeSpaceBytes) {
@@ -354,7 +354,8 @@ export function uploadRoutes(app: FastifyInstance, deps: UploadRouteDeps): void 
 
         // Disk guard: below the configured floor the upload is aborted and
         // its partial file removed — a full volume must not leave
-        // half-written drops behind. 507 is not retried by tus clients.
+        // half-written drops behind. 507 is 5xx, but the web uploader
+        // explicitly does not retry it.
         if (settings.minFreeSpaceBytes > 0) {
           const free = await probeFreeBytes(deps, req.log);
           if (free < settings.minFreeSpaceBytes) {

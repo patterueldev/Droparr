@@ -22,10 +22,9 @@ if [ "$(id -u)" = "0" ]; then
   if ! getent group "$PGID" >/dev/null 2>&1; then
     groupadd --gid "$PGID" droparr
   fi
-  GROUP_NAME="$(getent group "$PGID" | cut -d: -f1)"
 
   if ! getent passwd "$PUID" >/dev/null 2>&1; then
-    useradd --uid "$PUID" --gid "$GROUP_NAME" --no-create-home \
+    useradd --uid "$PUID" --gid "$PGID" --no-create-home \
       --shell /usr/sbin/nologin droparr
   fi
   USER_NAME="$(getent passwd "$PUID" | cut -d: -f1)"
@@ -42,7 +41,9 @@ if [ "$(id -u)" = "0" ]; then
 
   umask "$UMASK"
   echo "Droparr starting as ${USER_NAME} (${PUID}:${PGID}, umask ${UMASK})"
-  exec gosu "$USER_NAME" "$@"
+  # Numeric uid:gid so an existing username (e.g. `node` for PUID 1000)
+  # cannot silently override the requested PGID with its own primary group.
+  exec gosu "$PUID:$PGID" "$@"
 fi
 
 umask "${UMASK:-022}"

@@ -115,7 +115,9 @@ new uploads with `507` when free space is below `uploads.minFreeSpaceBytes`
 (default 10 GiB, `0` disables the guard). A running PATCH that crosses the
 floor — or hits a real `ENOSPC`/`EDQUOT` — aborts cleanly: the uncommitted tail
 is rolled back, the partial file and its DB row are removed, a `deleted` event
-goes out, and the client is told not to retry. An in-process scheduler
+goes out, and `507` is deliberately excluded from the web uploader's tus retry
+logic (it is a 5xx, so the retry predicate carves it out) so the user sees
+"storage is full" instead of a retry-into-404 loop. An in-process scheduler
 (`QuarantineCleanup`) sweeps ~1 min after boot and hourly: abandoned
 `uploading` rows whose last write is older than `uploads.retentionDays`
 (default 7, `0` keeps forever), drops whose files all completed before the
