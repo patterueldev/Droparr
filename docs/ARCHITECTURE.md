@@ -78,6 +78,38 @@ HistoryEntry { id, instanceId, kind, title, year, matchedId, files, result, time
    - poll `GET /api/v3/command/{id}` (pushed to the UI over WebSocket)
 7. **Verify & finish** — episode/movie file counts, links to the \*arr UI, optional Jellyfin `POST /Library/Refresh`, history entry, staging cleanup.
 
+## Uploads (TUS subset, M3.1)
+
+Browser drops upload in 32 MiB PATCH chunks — never single-request uploads —
+so multi-GB files pass through the Cloudflare Tunnel's 100 MB body limit.
+The client is `tus-js-client`; the server implements the subset it needs
+(creation + termination extensions; no concatenation, checksums, or deferred
+lengths).
+
+| Call | Purpose |
+| --- | --- |
+| `OPTIONS /api/uploads` | capabilities: `Tus-Version`, `Tus-Extension: creation,termination`, `Tus-Max-Size` (per-file cap) |
+| `POST /api/uploads` | create with `Upload-Length` + `Upload-Metadata` (`filename`, `filetype`, `relpath`, `dropid`) → `201` + `Location` |
+| `HEAD /api/uploads/:id` | resume probe → `Upload-Offset` / `Upload-Length`, `Cache-Control: no-store` |
+| `PATCH /api/uploads/:id` | append a chunk at `Upload-Offset` (`application/offset+octet-stream`) → `204` + new offset; `409` on offset mismatch, `423` while another write holds the upload, `413` over the chunk/size caps |
+| `DELETE /api/uploads/:id` | cancel + remove the partial file |
+| `GET /api/uploads?dropId=…` | Droparr extension: files of a drop + `completePath` once every file is done |
+
+Upload state (offset, filename, size, drop id) lives in SQLite; chunks are
+written straight to `<quarantineDir>/<dropId>/<relPath>` and fsynced **before**
+the offset is committed, so a crash never commits bytes that are not on disk.
+A killed browser resumes at the stored offset: tus-js-client fingerprints
+files (name/size/mtime) in localStorage, and re-adding the same files HEADs
+the server before continuing. Progress events ride the existing `/api/ws`
+channel (`type: "upload"`; job events are tagged `type: "job"`).
+
+Allowlist: video + subtitle extensions shared with the analyzer
+(`packages/shared/src/media.ts`); per-file and per-drop caps default to
+64 GiB / 256 GiB (`config.uploads`, `0` = unlimited). The quarantine directory
+defaults to `<dataDir>/quarantine`; when `DROPARR_BROWSE_ROOTS` is set it is
+added to the allowed browse roots automatically so `/api/analyze` can read
+completed drops.
+
 ## Verified \*arr API surface
 
 ### Sonarr v4+ (`X-Api-Key` header, base `/api/v3`)
