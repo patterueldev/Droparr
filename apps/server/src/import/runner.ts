@@ -175,6 +175,9 @@ export async function runImport(
         });
         matchedId = added.id;
         emit("adding", `Added series "${added.title}" to ${instance.name}`);
+        await waitForEpisodes(sonarr, added.id, seasons, (message) =>
+          emit("adding", message),
+        );
       }
     } else {
       const radarr = client as RadarrClient;
@@ -396,6 +399,40 @@ function buildSeasonSelection(
 function isStrictlyInside(parent: string, child: string): boolean {
   const rel = relative(resolve(parent), resolve(child));
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/**
+ * After adding a series the *arr refreshes episode metadata asynchronously;
+ * an immediate manual-import preflight can race that refresh and reject every
+ * file with "Invalid season or episode". Wait until episode rows exist for
+ * the seasons being imported (or a short timeout — preflight will surface
+ * the real problem either way).
+ */
+async function waitForEpisodes(
+  client: SonarrClient,
+  seriesId: number,
+  seasons: { seasonNumber: number; monitored: boolean }[],
+  onWait: (message: string) => void,
+): Promise<void> {
+  const wanted = new Set(
+    seasons.filter((s) => s.monitored).map((s) => s.seasonNumber),
+  );
+  const deadline = Date.now() + 30_000;
+  let announced = false;
+  for (;;) {
+    const episodes = await client.listEpisodes(seriesId).catch(() => []);
+    const relevant =
+      wanted.size > 0
+        ? episodes.filter((e) => wanted.has(e.seasonNumber))
+        : episodes;
+    if (relevant.length > 0) return;
+    if (Date.now() > deadline) return;
+    if (!announced) {
+      onWait("Waiting for the *arr to index episodes…");
+      announced = true;
+    }
+    await sleep(500);
+  }
 }
 
 async function pollCommand(

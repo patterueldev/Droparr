@@ -4,6 +4,7 @@ import type {
   ManualImportItem,
   QualityProfile,
   RootFolder,
+  SonarrEpisode,
   SonarrLookupResult,
   SonarrSeries,
   Tag,
@@ -55,6 +56,16 @@ export class SonarrClient extends ArrClient {
 
   async getSeries(id: number): Promise<SonarrSeries> {
     return this.request("GET", `/series/${id}`);
+  }
+
+  /**
+   * Episodes of a series. Used after adding a series: the *arr refreshes
+   * episode metadata asynchronously and an immediate manual-import preflight
+   * can race that refresh and reject every file with
+   * "Invalid season or episode".
+   */
+  async listEpisodes(seriesId: number): Promise<SonarrEpisode[]> {
+    return this.request("GET", "/episode", { query: { seriesId } });
   }
 
   async rootFolders(): Promise<RootFolder[]> {

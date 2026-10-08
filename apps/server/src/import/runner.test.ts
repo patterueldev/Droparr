@@ -58,6 +58,23 @@ describe("runImport (mock Sonarr)", () => {
             JSON.stringify({ id: 7, title: body.title, tvdbId: body.tvdbId }),
           );
         }
+        if (url.startsWith("/api/v3/episode")) {
+          // The runner waits for episode rows after adding a series; the
+          // first poll returns empty to exercise that path.
+          const polls = calls.filter((c) =>
+            c.url.startsWith("/api/v3/episode"),
+          ).length;
+          return res.end(
+            JSON.stringify(
+              polls >= 2
+                ? [
+                    { id: 101, seasonNumber: 1, episodeNumber: 1 },
+                    { id: 102, seasonNumber: 1, episodeNumber: 2 },
+                  ]
+                : [],
+            ),
+          );
+        }
         if (url.startsWith("/api/v3/manualimport")) {
           const folder = new URL(url, "http://x").searchParams.get("folder");
           const items = [
@@ -191,6 +208,14 @@ describe("runImport (mock Sonarr)", () => {
     expect(phases).toContain("preflight");
     expect(phases).toContain("import");
     expect(phases[phases.length - 1]).toBe("done");
+
+    // The runner waited for the *arr to index episodes before preflighting
+    // (the first poll returns empty in the mock).
+    const episodePolls = calls.filter((c) =>
+      c.url.startsWith("/api/v3/episode"),
+    ).length;
+    expect(episodePolls).toBeGreaterThanOrEqual(2);
+    expect(events.some((e) => e.message.includes("index episodes"))).toBe(true);
 
     const done = events[events.length - 1];
     expect(done.result?.importedFiles).toBe(1); // E02 was rejected
