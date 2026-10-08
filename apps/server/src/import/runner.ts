@@ -38,6 +38,12 @@ export interface ImportRequest {
   /** Series only: seasons to monitor (defaults to all seasons found). */
   seasons?: number[];
   importMode: "move" | "copy";
+  /**
+   * Optional subset of the drop's media files (paths relative to
+   * `sourcePath`) to stage and import. Fanned-out items use this for files
+   * that sit loose at a shared drop root; whole-drop imports omit it.
+   */
+  files?: string[];
 }
 
 export interface ImportDeps {
@@ -100,6 +106,22 @@ export async function runImport(
       throw new Error(`Source path is not a directory: ${req.sourcePath}`);
     }
     files = await walkMediaFiles(req.sourcePath);
+    if (req.files) {
+      // Fanned-out item: import only the requested files (e.g. the loose
+      // files of a fanned drop), not every sibling folder under the root.
+      const wanted = new Set(req.files);
+      const selected = files.files.filter((f) => wanted.has(f.path));
+      if (selected.length === 0) {
+        throw new Error(
+          "None of the requested files were found in the drop",
+        );
+      }
+      files = {
+        files: selected,
+        totalBytes: selected.reduce((sum, f) => sum + f.size, 0),
+        skipped: files.skipped,
+      };
+    }
     if (files.files.length === 0) {
       throw new Error("No media files found in the drop");
     }

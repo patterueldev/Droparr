@@ -6,7 +6,7 @@ import {
   parseAbsolute,
   parseSxxExx,
 } from "./parse.js";
-import { analyzeFolder, dropRootName } from "./analyze.js";
+import { analyzeFolder, analyzeDrop, dropRootName } from "./analyze.js";
 
 describe("cleanTitle", () => {
   it("strips release tags and separators from folder names", () => {
@@ -166,5 +166,112 @@ describe("analyzeFolder", () => {
     expect(result.kind).toBe("series");
     expect(result.season).toBeUndefined(); // ambiguous — multiple seasons
     expect(result.episodeNumbers).toEqual([1]);
+  });
+});
+
+describe("analyzeDrop", () => {
+  it("fans out sibling movie folders into one item each (issue #17)", () => {
+    const { analysis, items } = analyzeDrop({
+      files: ["A (2001)/A.mkv", "B (2004)/B.mkv"],
+    });
+
+    // The whole drop still reports its ambiguous single-item analysis…
+    expect(analysis.kind).toBe("movie");
+    expect(analysis.confidence).toBe("low");
+
+    // …but the reviewable items are the two movies.
+    expect(items).toHaveLength(2);
+    expect(items.map((i) => i.subPath)).toEqual(["A (2001)", "B (2004)"]);
+    expect(items[0]).toMatchObject({
+      kind: "movie",
+      title: "A",
+      year: 2001,
+      confidence: "high",
+    });
+    expect(items[1]).toMatchObject({
+      kind: "movie",
+      title: "B",
+      year: 2004,
+      confidence: "high",
+    });
+    expect(items[0].files.map((f) => f.path)).toEqual(["A (2001)/A.mkv"]);
+    expect(items[0].reasoning[0]).toContain("item 1 of 2");
+    expect(analysis.reasoning.join(" ")).toContain("Fanned out into 2 items");
+  });
+
+  it("keeps episode-patterned drops a single item", () => {
+    const { items } = analyzeDrop({
+      files: ["Show S01/S01E01.mkv", "Show S02/S02E01.mkv"],
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0].subPath).toBe("");
+    expect(items[0].kind).toBe("series");
+  });
+
+  it("keeps a mixed drop single when any folder has episode patterns", () => {
+    const { items } = analyzeDrop({
+      files: ["A (2001)/a.mkv", "B (2004)/S01E01.mkv"],
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0].subPath).toBe("");
+  });
+
+  it("does not fan out a single movie folder with sidecars", () => {
+    const { items } = analyzeDrop({
+      files: [
+        "The Matrix (1999)/The.Matrix.1999.mkv",
+        "The Matrix (1999)/The.Matrix.1999.srt",
+      ],
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0].subPath).toBe("");
+    expect(items[0]).toMatchObject({ kind: "movie", title: "The Matrix" });
+  });
+
+  it("never turns extras or split-media folders into items", () => {
+    const disc = analyzeDrop({
+      files: ["Disc1/movie.mkv", "Disc2/movie.mkv"],
+    });
+    expect(disc.items).toHaveLength(1);
+
+    const withExtras = analyzeDrop({
+      files: [
+        "A (2001)/a.mkv",
+        "B (2004)/b.mkv",
+        "Extras/making-of.mkv",
+      ],
+    });
+    expect(withExtras.items).toHaveLength(2);
+    expect(withExtras.items.some((i) => i.subPath === "Extras")).toBe(false);
+    expect(withExtras.analysis.reasoning.join(" ")).toContain("Extras");
+  });
+
+  it("adds loose root files as an extra item", () => {
+    const { items } = analyzeDrop({
+      files: [
+        "A (2001)/a.mkv",
+        "B (2004)/b.mkv",
+        "C (2010).mkv",
+        "C (2010).srt",
+      ],
+    });
+    expect(items).toHaveLength(3);
+    const loose = items[2];
+    expect(loose.subPath).toBe("");
+    expect(loose.title).toBe("C");
+    expect(loose.year).toBe(2010);
+    expect(loose.files.map((f) => f.path)).toEqual([
+      "C (2010).mkv",
+      "C (2010).srt",
+    ]);
+    expect(loose.reasoning[0]).toContain("item 3 of 3");
+  });
+
+  it("keeps the single-item flow when there is only one folder", () => {
+    const { items } = analyzeDrop({
+      files: ["A (2001)/a.mkv", "loose (2010).mkv"],
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0].subPath).toBe("");
   });
 });

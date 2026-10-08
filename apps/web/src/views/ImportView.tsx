@@ -1,23 +1,41 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { pickDefaultCategory } from "@droparr/core";
-import type {
-  Category,
-  FolderAnalysis,
-  Instance,
-  UploadSettings,
-} from "@droparr/shared";
-import { api, connectJobEvents, formatBytes, type JobEvent } from "../api";
+import type { Category, Instance, UploadSettings } from "@droparr/shared";
+import {
+  api,
+  connectJobEvents,
+  formatBytes,
+  type AnalyzeResponse,
+  type JobEvent,
+} from "../api";
 import UploadPanel from "./UploadPanel";
 
 type Step = "pick" | "review" | "running" | "done";
 
-interface AnalysisResult {
+type AnalysisResult = AnalyzeResponse;
+
+/** One reviewable item of a fanned-out multi-movie drop. */
+interface FanoutItemState {
+  /** Absolute path to import from (the item's folder, or the drop root). */
   sourcePath: string;
-  dropName: string;
-  analysis: FolderAnalysis;
-  totalBytes: number;
-  skipped: string[];
+  /** Path from the drop root; "" for files sitting at the drop root itself. */
+  subPath: string;
+  analysis: AnalyzeResponse["items"][number];
+  title: string;
+  year?: number;
+  categoryId: string;
+  match: Record<string, unknown> | null;
+  include: boolean;
+}
+
+/** One pipeline of a batch import, tracked by jobId. */
+interface BatchJobState {
+  jobId: string;
+  title: string;
+  subPath: string;
+  events: JobEvent[];
+  final: JobEvent | null;
 }
 
 export default function ImportView({
@@ -38,10 +56,14 @@ export default function ImportView({
   const [seasons, setSeasons] = useState<number[]>([]);
   const [importMode, setImportMode] = useState<"copy" | "move">("copy");
 
+  // Multi-movie fan-out review (null unless the drop fanned out).
+  const [fanoutItems, setFanoutItems] = useState<FanoutItemState[] | null>(null);
+
   // Running state
   const [jobId, setJobId] = useState<string | null>(null);
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [finalEvent, setFinalEvent] = useState<JobEvent | null>(null);
+  const [batchJobs, setBatchJobs] = useState<BatchJobState[]>([]);
   const queryClient = useQueryClient();
 
   const { data: instances = [] } = useQuery({
@@ -72,6 +94,35 @@ export default function ImportView({
     return disconnect;
   }, [step, jobId, queryClient]);
 
+  // Track each pipeline of a fan-out batch import by its jobId.
+  useEffect(() => {
+    if (step !== "running" || batchJobs.length === 0) return;
+    const disconnect = connectJobEvents((e) => {
+      setBatchJobs((prev) => {
+        const idx = prev.findIndex((j) => j.jobId === e.jobId);
+        if (idx === -1) return prev;
+        const job = prev[idx];
+        const next = [...prev];
+        next[idx] = {
+          ...job,
+          events: [...job.events, e],
+          final: e.phase === "done" || e.phase === "error" ? e : job.final,
+        };
+        return next;
+      });
+    });
+    return disconnect;
+  }, [step, batchJobs.length]);
+
+  // The batch is done when every pipeline reported a terminal event.
+  useEffect(() => {
+    if (step !== "running" || batchJobs.length === 0) return;
+    if (batchJobs.every((j) => j.final)) {
+      setStep("done");
+      void queryClient.invalidateQueries({ queryKey: ["history"] });
+    }
+  }, [step, batchJobs, queryClient]);
+
   const handleAnalyze = useCallback(async (path: string) => {
     setBusy(true);
     setError(null);
@@ -89,6 +140,21 @@ export default function ImportView({
           : result.analysis.episodeNumbers?.length
             ? [1]
             : [],
+      );
+      // Multiple items → one reviewable card per item.
+      setFanoutItems(
+        result.items.length > 1
+          ? result.items.map((item) => ({
+              sourcePath: item.sourcePath,
+              subPath: item.subPath,
+              analysis: item,
+              title: item.title,
+              year: item.year,
+              categoryId: "",
+              match: null,
+              include: true,
+            }))
+          : null,
       );
       setStep("review");
     } catch (err) {
@@ -128,6 +194,73 @@ export default function ImportView({
     }
   }, [drop, match, categoryId, title, year, seasons, importMode]);
 
+  const updateFanoutItem = useCallback(
+    (index: number, patch: Partial<FanoutItemState>) => {
+      setFanoutItems(
+        (prev) =>
+          prev?.map((item, i) =>
+            i === index ? { ...item, ...patch } : item,
+          ) ?? prev,
+      );
+    },
+    [],
+  );
+
+  const handleBatchImport = useCallback(async () => {
+    if (!drop || !fanoutItems) return;
+    const included = fanoutItems.filter((item) => item.include);
+    if (
+      included.length === 0 ||
+      included.some((item) => !item.match || !item.categoryId)
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const { jobs } = await api.startImportBatch({
+        items: included.map((item) => {
+          const match = item.match ?? {};
+          return {
+            sourcePath: item.sourcePath,
+            categoryId: item.categoryId,
+            match: {
+              tmdbId: match.tmdbId as number | undefined,
+              title: (match.title as string) ?? item.title,
+              year: (match.year as number) ?? item.year,
+              extra: match,
+            },
+            importMode,
+            // Files at the drop root are shared with the sibling folders —
+            // import only this item's files.
+            files:
+              item.subPath === ""
+                ? item.analysis.files.map((f) => f.path)
+                : undefined,
+          };
+        }),
+      });
+      setBatchJobs(
+        jobs.map((job, i) => ({
+          jobId: job.jobId,
+          title:
+            (included[i].match?.title as string) ?? included[i].title,
+          subPath: included[i].subPath,
+          events: [],
+          final: null,
+        })),
+      );
+      setEvents([]);
+      setFinalEvent(null);
+      setJobId(null);
+      setStep("running");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [drop, fanoutItems, importMode]);
+
   const reset = () => {
     setStep("pick");
     setDrop(null);
@@ -135,6 +268,8 @@ export default function ImportView({
     setEvents([]);
     setFinalEvent(null);
     setJobId(null);
+    setFanoutItems(null);
+    setBatchJobs([]);
     setError(null);
   };
 
@@ -177,7 +312,22 @@ export default function ImportView({
         />
       )}
 
-      {step === "review" && drop && (
+      {step === "review" && drop && fanoutItems && (
+        <MultiReviewStep
+          drop={drop}
+          items={fanoutItems}
+          categories={categories}
+          instances={instances}
+          importMode={importMode}
+          busy={busy}
+          onUpdateItem={updateFanoutItem}
+          onImportModeChange={setImportMode}
+          onBack={reset}
+          onImport={handleBatchImport}
+        />
+      )}
+
+      {step === "review" && drop && !fanoutItems && (
         <ReviewStep
           drop={drop}
           title={title}
@@ -209,13 +359,16 @@ export default function ImportView({
         />
       )}
 
-      {(step === "running" || step === "done") && (
-        <ProgressStep
-          events={events}
-          finalEvent={finalEvent}
-          onReset={reset}
-        />
-      )}
+      {(step === "running" || step === "done") &&
+        (batchJobs.length > 0 ? (
+          <BatchProgressStep jobs={batchJobs} onReset={reset} />
+        ) : (
+          <ProgressStep
+            events={events}
+            finalEvent={finalEvent}
+            onReset={reset}
+          />
+        ))}
     </div>
   );
 }
@@ -821,7 +974,273 @@ function MatchSearch({
   );
 }
 
+// ---------------------------------------------------------------- Fan-out review
+
+function MultiReviewStep({
+  drop,
+  items,
+  categories,
+  instances,
+  importMode,
+  busy,
+  onUpdateItem,
+  onImportModeChange,
+  onBack,
+  onImport,
+}: {
+  drop: AnalysisResult;
+  items: FanoutItemState[];
+  categories: Category[];
+  instances: Instance[];
+  importMode: "copy" | "move";
+  busy: boolean;
+  onUpdateItem: (index: number, patch: Partial<FanoutItemState>) => void;
+  onImportModeChange: (m: "copy" | "move") => void;
+  onBack: () => void;
+  onImport: () => void;
+}) {
+  const included = items.filter((i) => i.include);
+  const ready = included.every((i) => i.categoryId && i.match);
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-amber-900/60 bg-amber-950/20 p-5 space-y-2">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 text-xs text-zinc-500">
+              <span className="rounded bg-zinc-800 px-1.5 py-0.5 uppercase tracking-wide">
+                multi-movie drop
+              </span>
+              <span className="text-amber-400">
+                {items.length} movies detected
+              </span>
+            </div>
+            <p className="text-xs text-zinc-500 font-mono mt-2">
+              {drop.sourcePath}
+            </p>
+            <p className="text-xs text-zinc-500 mt-1">
+              {items.length} items · {formatBytes(drop.totalBytes)}
+              {drop.skipped.length > 0 && (
+                <> · skipped {drop.skipped.length} non-media file(s)</>
+              )}
+            </p>
+          </div>
+          <button
+            onClick={onBack}
+            className="shrink-0 text-xs text-zinc-400 hover:text-zinc-200"
+          >
+            change drop
+          </button>
+        </div>
+        {drop.analysis.reasoning.length > 0 && (
+          <div className="text-xs text-zinc-600">
+            {drop.analysis.reasoning.join(" · ")}
+          </div>
+        )}
+      </div>
+
+      {items.map((item, index) => (
+        <FanoutItemCard
+          key={`${item.subPath}-${index}`}
+          index={index}
+          item={item}
+          categories={categories}
+          instances={instances}
+          onUpdate={onUpdateItem}
+        />
+      ))}
+
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onBack}
+            className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
+          >
+            ← Back
+          </button>
+          <label className="flex items-center gap-2">
+            <span className="text-xs text-zinc-400">File handling</span>
+            <select
+              value={importMode}
+              onChange={(e) =>
+                onImportModeChange(e.target.value as "copy" | "move")
+              }
+              className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm focus:border-emerald-600 focus:outline-none"
+            >
+              <option value="copy">Copy (keep originals)</option>
+              <option value="move">Move (remove originals)</option>
+            </select>
+          </label>
+        </div>
+        <button
+          disabled={busy || included.length === 0 || !ready}
+          onClick={onImport}
+          className="rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 px-5 py-2 text-sm font-medium"
+        >
+          {busy
+            ? "Starting…"
+            : `Import ${included.length} movie${included.length === 1 ? "" : "s"}`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function FanoutItemCard({
+  index,
+  item,
+  categories,
+  instances,
+  onUpdate,
+}: {
+  index: number;
+  item: FanoutItemState;
+  categories: Category[];
+  instances: Instance[];
+  onUpdate: (index: number, patch: Partial<FanoutItemState>) => void;
+}) {
+  const analysis = item.analysis;
+  const eligibleCategories = categories.filter((c) => c.kind === analysis.kind);
+  const category = eligibleCategories.find((c) => c.id === item.categoryId);
+  const instance = instances.find((i) => i.id === category?.instanceId);
+
+  // Preselect like the single-item review; the admin can always override.
+  const preferredCategory = useMemo(
+    () => pickDefaultCategory(categories, analysis),
+    [categories, analysis],
+  );
+  useEffect(() => {
+    if (!item.categoryId && preferredCategory) {
+      onUpdate(index, { categoryId: preferredCategory.id });
+    }
+  }, [item.categoryId, preferredCategory, index, onUpdate]);
+
+  const confidenceColor =
+    analysis.confidence === "high"
+      ? "text-emerald-400"
+      : analysis.confidence === "medium"
+        ? "text-amber-400"
+        : "text-red-400";
+
+  return (
+    <div
+      className={`rounded-xl border border-zinc-800 bg-zinc-900/50 p-5 space-y-4 ${
+        item.include ? "" : "opacity-60"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <label className="flex items-center gap-3 cursor-pointer select-none min-w-0">
+          <input
+            type="checkbox"
+            checked={item.include}
+            onChange={(e) => onUpdate(index, { include: e.target.checked })}
+            className="h-4 w-4 shrink-0 rounded border-zinc-600 bg-zinc-900 accent-emerald-600"
+          />
+          <span className="text-xs text-zinc-500 truncate">
+            {item.subPath ? (
+              <span className="font-mono">{item.subPath}</span>
+            ) : (
+              "files at the drop root"
+            )}
+          </span>
+        </label>
+        <span className={`shrink-0 text-xs ${confidenceColor}`}>
+          {analysis.confidence} confidence
+        </span>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="space-y-3">
+          <div className="grid grid-cols-[1fr_5.5rem] gap-3">
+            <label className="block space-y-1.5">
+              <span className="text-xs text-zinc-400">Detected title</span>
+              <input
+                value={item.title}
+                onChange={(e) => onUpdate(index, { title: e.target.value })}
+                className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm focus:border-emerald-600 focus:outline-none"
+              />
+            </label>
+            <label className="block space-y-1.5">
+              <span className="text-xs text-zinc-400">Year</span>
+              <input
+                type="number"
+                value={item.year ?? ""}
+                onChange={(e) =>
+                  onUpdate(index, {
+                    year: e.target.value ? Number(e.target.value) : undefined,
+                  })
+                }
+                className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm focus:border-emerald-600 focus:outline-none"
+              />
+            </label>
+          </div>
+          <div className="text-xs text-zinc-500 space-y-1">
+            <div>{analysis.files.length} file(s)</div>
+            {analysis.reasoning.length > 0 && (
+              <div className="text-zinc-600">
+                {analysis.reasoning.join(" · ")}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <label className="block space-y-1.5">
+            <span className="text-xs text-zinc-400">Category</span>
+            <select
+              value={item.categoryId}
+              onChange={(e) => onUpdate(index, { categoryId: e.target.value })}
+              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm focus:border-emerald-600 focus:outline-none"
+            >
+              {eligibleCategories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {instance ? (
+            <MatchSearch
+              instanceId={instance.id}
+              initialTerm={`${item.title}${item.year ? ` ${item.year}` : ""}`}
+              kind={analysis.kind}
+              selected={item.match}
+              onSelect={(m) =>
+                onUpdate(index, {
+                  match: m,
+                  ...(m
+                    ? {
+                        title: (m.title as string) ?? item.title,
+                        year: m.year as number | undefined,
+                      }
+                    : {}),
+                })
+              }
+            />
+          ) : (
+            <p className="text-sm text-zinc-500">
+              {eligibleCategories.length === 0
+                ? `No ${analysis.kind} categories configured.`
+                : "Pick a category to search its instance."}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- Progress
+
+const PHASE_LABEL: Record<string, string> = {
+  staging: "Staging files",
+  adding: "Adding to library",
+  preflight: "Preflight",
+  import: "Importing",
+  cleanup: "Cleaning up",
+  done: "Done",
+  error: "Failed",
+};
 
 function ProgressStep({
   events,
@@ -835,16 +1254,6 @@ function ProgressStep({
   const last = events[events.length - 1];
   const staging = events.filter((e) => e.phase === "staging");
   const stagingProgress = staging.length > 0 ? staging[staging.length - 1].progress : undefined;
-
-  const phaseLabel: Record<string, string> = {
-    staging: "Staging files",
-    adding: "Adding to library",
-    preflight: "Preflight",
-    import: "Importing",
-    cleanup: "Cleaning up",
-    done: "Done",
-    error: "Failed",
-  };
 
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6 space-y-5">
@@ -862,7 +1271,7 @@ function ProgressStep({
               ? finalEvent.phase === "done"
                 ? "Import complete"
                 : "Import failed"
-              : phaseLabel[last?.phase ?? "queued"] ?? "Working…"}
+              : PHASE_LABEL[last?.phase ?? "queued"] ?? "Working…"}
           </h2>
           <p className="text-sm text-zinc-400">{last?.message}</p>
         </div>
@@ -931,6 +1340,118 @@ function ProgressStep({
       </div>
 
       {(finalEvent || events.length > 0) && (
+        <button
+          onClick={onReset}
+          className="rounded-md bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-sm font-medium"
+        >
+          Add another drop
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Batch progress
+
+function BatchProgressStep({
+  jobs,
+  onReset,
+}: {
+  jobs: BatchJobState[];
+  onReset: () => void;
+}) {
+  const finished = jobs.filter((j) => j.final).length;
+  const succeeded = jobs.filter((j) => j.final?.phase === "done").length;
+  const allDone = finished === jobs.length;
+
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6 space-y-5">
+      <div className="flex items-center gap-3">
+        {!allDone ? (
+          <span className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-emerald-400" />
+        ) : succeeded === jobs.length ? (
+          <span className="text-2xl">✅</span>
+        ) : (
+          <span className="text-2xl">⚠️</span>
+        )}
+        <div>
+          <h2 className="text-lg font-medium">
+            {!allDone
+              ? `Importing ${finished}/${jobs.length}…`
+              : succeeded === jobs.length
+                ? "All imports complete"
+                : `Imported ${succeeded} of ${jobs.length}`}
+          </h2>
+          <p className="text-sm text-zinc-400">
+            Each movie ran its own pipeline and history entry.
+          </p>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        {jobs.map((job) => {
+          const last = job.events[job.events.length - 1];
+          const stagingProgress =
+            !job.final && last?.phase === "staging" ? last.progress : undefined;
+          return (
+            <div
+              key={job.jobId}
+              className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-4 py-3 space-y-2"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm truncate">
+                  {job.title}
+                  {job.subPath && (
+                    <span className="text-xs text-zinc-500 font-mono">
+                      {" "}
+                      · {job.subPath}
+                    </span>
+                  )}
+                </span>
+                <span
+                  className={`shrink-0 text-xs ${
+                    job.final?.phase === "done"
+                      ? "text-emerald-400"
+                      : job.final?.phase === "error"
+                        ? "text-red-400"
+                        : "text-zinc-500"
+                  }`}
+                >
+                  {job.final
+                    ? job.final.phase === "done"
+                      ? "done"
+                      : "failed"
+                    : PHASE_LABEL[last?.phase ?? "queued"] ?? "queued"}
+                </span>
+              </div>
+              <p className="text-xs text-zinc-500 truncate">
+                {job.final?.phase === "error" ? job.final.error : last?.message}
+              </p>
+              {stagingProgress !== undefined && (
+                <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500 transition-all"
+                    style={{ width: `${Math.round(stagingProgress * 100)}%` }}
+                  />
+                </div>
+              )}
+              {job.final?.phase === "done" && job.final.result && (
+                <p className="text-xs text-zinc-400">
+                  {job.final.result.importedFiles} file(s) imported
+                  {job.final.result.rejectedFiles.length > 0 && (
+                    <span className="text-amber-400">
+                      {" "}
+                      · {job.final.result.rejectedFiles.length} rejected
+                    </span>
+                  )}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {allDone && (
         <button
           onClick={onReset}
           className="rounded-md bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-sm font-medium"
