@@ -131,6 +131,7 @@ Submitters require admin approval before anything touches Sonarr/Radarr. A per-u
 | 2026-10-08 | Approval: non-admin submissions require approval; per-user trust toggle; admins auto-approve | invite links dropped for MVP (possible future guest feature) |
 | 2026-10-08 | LLM: **pluggable, off by default** | OpenAI-compatible providers; only file/folder names and metadata are ever sent; results cached |
 | 2026-10-08 | Anime routing: heuristics pre-select the category, review always allows override | never trust detection blindly |
+| 2026-10-08 | Settings **export/import** (versioned JSON) | migrates the Mac test setup to the home server; file contains API keys (UI warns); import validates, prunes orphaned categories, warns about machine-specific paths (staging dir) |
 | 2026-10-08 | License: **MIT** | |
 
 ## Open questions
