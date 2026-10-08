@@ -59,6 +59,12 @@ describe("staging visibility audit", () => {
       });
     });
 
+    it("ignores surrounding whitespace in the configured staging dir", async () => {
+      const audit = await auditSettingsStaging(config(`  ${stagingDir}  `));
+      expect(audit.issues).toEqual([]);
+      expect(audit.stagingDir).toBe(stagingDir);
+    });
+
     it("warns when an in-use instance cannot see the staging dir", async () => {
       const unmapped: Instance = { ...instance, pathMappings: [] };
       const audit = await auditSettingsStaging(config(stagingDir, unmapped));

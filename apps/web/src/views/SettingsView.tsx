@@ -82,10 +82,10 @@ function StagingSection({
   const [status, setStatus] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
 
-  // Keep in sync when loaded.
-  if (!dirty && value !== stagingDir && stagingDir) {
-    setValue(stagingDir);
-  }
+  // Keep in sync when loaded / saved elsewhere.
+  useEffect(() => {
+    if (!dirty && stagingDir) setValue(stagingDir);
+  }, [dirty, stagingDir]);
 
   const save = async () => {
     try {

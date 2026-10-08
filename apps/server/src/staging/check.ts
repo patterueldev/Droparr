@@ -66,12 +66,10 @@ export async function auditSettingsStaging(
   if (coverage.some((i) => i.code === "staging-dir-empty")) {
     return { stagingDir: "", issues: coverage };
   }
+  const stagingDir = config.stagingDir.trim();
   return {
-    stagingDir: config.stagingDir,
-    issues: [
-      ...coverage,
-      ...(await stagingDirFilesystemIssues(config.stagingDir)),
-    ],
+    stagingDir,
+    issues: [...coverage, ...(await stagingDirFilesystemIssues(stagingDir))],
   };
 }
 
