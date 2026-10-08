@@ -11,6 +11,9 @@
 //   duplicate  Title already in library → import-only mode (no duplicate add)
 //   rejections Rejections surface instead of failing silently
 //   copy       Copy mode keeps staged files (move mode cleans staging up)
+//
+// Test titles are verified absent from the real libraries; imports go into
+// isolated /media-03/DROPARR-TEST root folders (see setup.mjs).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +39,28 @@ const CAT = {
   anime: env("ANIME_CATEGORY_NAME", "Anime"),
   movies: env("MOVIES_CATEGORY_NAME", "Movies"),
 };
+
+// Test titles — all verified absent from the real libraries (checked 2026-10-08).
+const TITLES = {
+  movie: { term: "Dune 2021", tmdbId: 438631, title: "Dune", year: 2021 },
+  tv: { term: "Severance", tvdbId: 371980, title: "Severance", year: 2022 },
+  anime: {
+    term: "Edgerunners",
+    tvdbId: 384541,
+    title: "Cyberpunk: Edgerunners",
+    year: 2022,
+  },
+  rejections: { term: "Andor", tvdbId: 393189, title: "Andor", year: 2022 },
+  copy: { term: "Parasite 2019", tmdbId: 496243, title: "Parasite", year: 2019 },
+};
+
+const DROP_DIRS = [
+  "Dune (2021)",
+  "Severance S01 1080p",
+  "Edgerunners",
+  "Andor S01 1080p",
+  "Parasite (2019)",
+];
 
 function check(cond, message) {
   if (!cond) throw new Error(message);
@@ -64,6 +89,23 @@ function lookup(instanceId, term) {
   return droparr(
     `/api/instances/${instanceId}/lookup?term=${encodeURIComponent(term)}`,
   );
+}
+
+/** Find the exact lookup result for a spec, by id + title. */
+function pickMatch(results, spec, idField) {
+  const match = results.find(
+    (r) =>
+      r[idField] === spec[idField] &&
+      String(r.title).toLowerCase() === spec.title.toLowerCase(),
+  );
+  check(
+    match,
+    `Lookup "${spec.term}" did not return ${spec.title} (${idField} ${spec[idField]}) — got: ${results
+      .slice(0, 3)
+      .map((r) => `${r.title} (${r.year}, ${idField} ${r[idField]})`)
+      .join(", ")}`,
+  );
+  return match;
 }
 
 async function waitForJob(jobId, timeoutMs = 20 * 60 * 1000) {
@@ -107,19 +149,29 @@ function stagingNote(exists) {
   return exists === undefined ? "not checked (no SSH_HOST)" : !exists;
 }
 
+/** Remove leftovers from previous runs so every scenario starts clean. */
+async function cleanSlate() {
+  const host = env("STAGING_HOST_DIR", "");
+  if (!host) return;
+  for (const dir of DROP_DIRS) {
+    ssh(`rm -rf '${host}/${dir}'`);
+  }
+}
+
 // ---------------------------------------------------------------- scenarios
 
 async function scenarioMovie(ctx, state) {
   const instance = ctx.inst(NAME.movies);
   const category = ctx.cat(CAT.movies);
-  const results = await lookup(instance.id, "The Matrix 1999");
-  const match = results.find(
-    (r) => r.title === "The Matrix" && Number(r.year) === 1999,
+  const spec = TITLES.movie;
+  const match = pickMatch(
+    await lookup(instance.id, spec.term),
+    spec,
+    "tmdbId",
   );
-  check(match, `No "The Matrix (1999)" lookup result (${results.length} results)`);
 
   const job = await startImport({
-    sourcePath: `${DROPS}/The Matrix (1999)`,
+    sourcePath: `${DROPS}/Dune (2021)`,
     categoryId: category.id,
     match: {
       tmdbId: match.tmdbId,
@@ -136,6 +188,10 @@ async function scenarioMovie(ctx, state) {
     final.phase === "done",
     `Job ended "${final.phase}": ${final.error ?? final.message}`,
   );
+  const added = job.events.find(
+    (e) => e.phase === "adding" && e.message.startsWith("Added movie"),
+  );
+  check(added, "The movie was not added — title may already exist in the library");
   check(
     final.result.importedFiles === 1,
     `importedFiles=${final.result.importedFiles}, expected 1`,
@@ -145,21 +201,26 @@ async function scenarioMovie(ctx, state) {
     `unexpected rejections: ${JSON.stringify(final.result.rejectedFiles)}`,
   );
 
-  const movies = await arr("radarr_movies", "/api/v3/movie");
-  const movie = movies.find((m) => m.tmdbId === match.tmdbId);
+  const movie = (await arr("radarr_movies", "/api/v3/movie")).find(
+    (m) => m.tmdbId === match.tmdbId,
+  );
   check(movie, "Movie not found in the Radarr library");
+  check(
+    String(movie.path ?? "").startsWith(`${env("RADARR_MOVIES_ROOT")}/`),
+    `Movie path not under the test root: ${movie.path}`,
+  );
   check(movie.hasFile === true, "Movie has no file after import");
   const filePath = movie.movieFile?.path ?? "";
   check(
     filePath.startsWith(`${env("RADARR_MOVIES_ROOT")}/`),
     `File not under the test root: ${filePath}`,
   );
-  check(filePath.includes("The Matrix (1999)"), `File was not renamed: ${filePath}`);
+  check(filePath.includes("Dune (2021)"), `File was not renamed: ${filePath}`);
 
   const history = await historyEntry(final.result.historyId);
   check(history?.result === "success", `History result: ${history?.result}`);
 
-  const staging = await stagingExists("The Matrix (1999)");
+  const staging = await stagingExists("Dune (2021)");
   if (staging !== undefined) {
     check(staging === false, "Staging drop folder was not cleaned up");
   }
@@ -177,14 +238,11 @@ async function scenarioMovie(ctx, state) {
 async function scenarioTv(ctx, state) {
   const instance = ctx.inst(NAME.tv);
   const category = ctx.cat(CAT.tv);
-  const results = await lookup(instance.id, "Breaking Bad");
-  const match = results.find(
-    (r) => r.title === "Breaking Bad" && Number(r.year) === 2008,
-  );
-  check(match, "No Breaking Bad (2008) lookup result");
+  const spec = TITLES.tv;
+  const match = pickMatch(await lookup(instance.id, spec.term), spec, "tvdbId");
 
   const job = await startImport({
-    sourcePath: `${DROPS}/Breaking Bad S01 1080p`,
+    sourcePath: `${DROPS}/Severance S01 1080p`,
     categoryId: category.id,
     match: {
       tvdbId: match.tvdbId,
@@ -202,6 +260,10 @@ async function scenarioTv(ctx, state) {
     final.phase === "done",
     `Job ended "${final.phase}": ${final.error ?? final.message}`,
   );
+  const added = job.events.find(
+    (e) => e.phase === "adding" && e.message.startsWith("Added series"),
+  );
+  check(added, "The series was not added — title may already exist in the library");
   check(
     final.result.importedFiles === 3,
     `importedFiles=${final.result.importedFiles}, expected 3`,
@@ -217,9 +279,11 @@ async function scenarioTv(ctx, state) {
   );
   const season1 = series.seasons.find((s) => s.seasonNumber === 1);
   check(season1?.monitored === true, "Season 1 is not monitored");
-  const others = series.seasons.filter((s) => s.seasonNumber > 1);
+  const others = series.seasons.filter((s) => s.seasonNumber !== 1);
   check(others.length > 0, "expected the series to have multiple seasons");
-  const wronglyMonitored = others.filter((s) => s.monitored).map((s) => s.seasonNumber);
+  const wronglyMonitored = others
+    .filter((s) => s.monitored)
+    .map((s) => s.seasonNumber);
   check(
     wronglyMonitored.length === 0,
     `Seasons monitored that should not be: ${wronglyMonitored.join(", ")}`,
@@ -231,7 +295,7 @@ async function scenarioTv(ctx, state) {
   const history = await historyEntry(final.result.historyId);
   check(history?.result === "success", `History result: ${history?.result}`);
 
-  const staging = await stagingExists("Breaking Bad S01 1080p");
+  const staging = await stagingExists("Severance S01 1080p");
   if (staging !== undefined) {
     check(staging === false, "Staging drop folder was not cleaned up");
   }
@@ -253,12 +317,11 @@ async function scenarioTv(ctx, state) {
 async function scenarioAnime(ctx, state) {
   const instance = ctx.inst(NAME.anime);
   const category = ctx.cat(CAT.anime);
-  const results = await lookup(instance.id, "Frieren");
-  const match = results.find((r) => /frieren/i.test(String(r.title)));
-  check(match, "No Frieren lookup result on the anime instance");
+  const spec = TITLES.anime;
+  const match = pickMatch(await lookup(instance.id, spec.term), spec, "tvdbId");
 
   const job = await startImport({
-    sourcePath: `${DROPS}/Frieren`,
+    sourcePath: `${DROPS}/Edgerunners`,
     categoryId: category.id,
     match: {
       tvdbId: match.tvdbId,
@@ -276,6 +339,13 @@ async function scenarioAnime(ctx, state) {
     final.phase === "done",
     `Job ended "${final.phase}": ${final.error ?? final.message}`,
   );
+  const added = job.events.find(
+    (e) =>
+      e.phase === "adding" &&
+      e.message.startsWith("Added series") &&
+      e.message.includes(instance.name),
+  );
+  check(added, `The series was not added to ${instance.name}`);
   check(
     final.result.importedFiles >= 3,
     `importedFiles=${final.result.importedFiles}, expected >= 3`,
@@ -300,18 +370,13 @@ async function scenarioAnime(ctx, state) {
   );
   check(!onTv, "Series was also added to the TV instance");
 
-  const adding = job.events.find(
-    (e) => e.phase === "adding" && e.message.includes(instance.name),
-  );
-  check(adding, `No adding event mentioning "${instance.name}"`);
-
   const files = await arr("sonarr_anime", `/api/v3/episodefile?seriesId=${series.id}`);
   check(files.length >= 3, `episode files: ${files.length}, expected >= 3`);
 
   const history = await historyEntry(final.result.historyId);
   check(history?.result === "success", `History result: ${history?.result}`);
 
-  const staging = await stagingExists("Frieren");
+  const staging = await stagingExists("Edgerunners");
   if (staging !== undefined) {
     check(staging === false, "Staging drop folder was not cleaned up");
   }
@@ -333,14 +398,11 @@ async function scenarioAnime(ctx, state) {
 async function scenarioDuplicate(ctx, state) {
   const instance = ctx.inst(NAME.movies);
   const category = ctx.cat(CAT.movies);
-  const results = await lookup(instance.id, "The Matrix 1999");
-  const match = results.find(
-    (r) => r.title === "The Matrix" && Number(r.year) === 1999,
-  );
-  check(match, "No The Matrix (1999) lookup result");
+  const spec = TITLES.movie;
+  const match = pickMatch(await lookup(instance.id, spec.term), spec, "tmdbId");
 
   const job = await startImport({
-    sourcePath: `${DROPS}/The Matrix (1999)`,
+    sourcePath: `${DROPS}/Dune (2021)`,
     categoryId: category.id,
     match: {
       tmdbId: match.tmdbId,
@@ -366,7 +428,7 @@ async function scenarioDuplicate(ctx, state) {
   const final = lastEvent(job);
   let stagingSwept = false;
   if (final.phase === "error") {
-    stagingSwept = await sweepStaging("The Matrix (1999)");
+    stagingSwept = await sweepStaging("Dune (2021)");
   }
 
   return {
@@ -383,14 +445,11 @@ async function scenarioDuplicate(ctx, state) {
 async function scenarioRejection(ctx, state) {
   const instance = ctx.inst(NAME.tv);
   const category = ctx.cat(CAT.tv);
-  const results = await lookup(instance.id, "Chernobyl");
-  const match = results.find(
-    (r) => r.title === "Chernobyl" && Number(r.year) === 2019,
-  );
-  check(match, "No Chernobyl (2019) lookup result");
+  const spec = TITLES.rejections;
+  const match = pickMatch(await lookup(instance.id, spec.term), spec, "tvdbId");
 
   const job = await startImport({
-    sourcePath: `${DROPS}/Chernobyl S01 1080p`,
+    sourcePath: `${DROPS}/Andor S01 1080p`,
     categoryId: category.id,
     match: {
       tvdbId: match.tvdbId,
@@ -417,11 +476,17 @@ async function scenarioRejection(ctx, state) {
     final.result.rejectedFiles.every((r) => r.reasons.length > 0),
     "A rejected file was reported without a reason",
   );
+  check(
+    final.result.rejectedFiles.some((r) => /S01E99/i.test(r.path)),
+    `The invalid episode (S01E99) was not the rejected file: ${JSON.stringify(
+      final.result.rejectedFiles,
+    )}`,
+  );
 
   const history = await historyEntry(final.result.historyId);
   check(history?.result === "partial", `History result: ${history?.result}`);
 
-  const staging = await stagingExists("Chernobyl S01 1080p");
+  const staging = await stagingExists("Andor S01 1080p");
   if (staging !== undefined) {
     check(staging === false, "Staging drop folder was not cleaned up");
   }
@@ -440,14 +505,11 @@ async function scenarioRejection(ctx, state) {
 async function scenarioCopy(ctx, state) {
   const instance = ctx.inst(NAME.movies);
   const category = ctx.cat(CAT.movies);
-  const results = await lookup(instance.id, "Interstellar 2014");
-  const match = results.find(
-    (r) => r.title === "Interstellar" && Number(r.year) === 2014,
-  );
-  check(match, "No Interstellar (2014) lookup result");
+  const spec = TITLES.copy;
+  const match = pickMatch(await lookup(instance.id, spec.term), spec, "tmdbId");
 
   const job = await startImport({
-    sourcePath: `${DROPS}/Interstellar (2014)`,
+    sourcePath: `${DROPS}/Parasite (2019)`,
     categoryId: category.id,
     match: {
       tmdbId: match.tmdbId,
@@ -469,15 +531,16 @@ async function scenarioCopy(ctx, state) {
     `importedFiles=${final.result.importedFiles}, expected 1`,
   );
 
-  const movies = await arr("radarr_movies", "/api/v3/movie");
-  const movie = movies.find((m) => m.tmdbId === match.tmdbId);
+  const movie = (await arr("radarr_movies", "/api/v3/movie")).find(
+    (m) => m.tmdbId === match.tmdbId,
+  );
   check(movie?.hasFile === true, "Movie has no file after copy import");
 
   // Copy mode intentionally keeps the staged files.
-  const staging = await stagingExists("Interstellar (2014)");
+  const staging = await stagingExists("Parasite (2019)");
   if (staging !== undefined) {
     check(staging === true, "Copy mode removed the staged files");
-    await sweepStaging("Interstellar (2014)");
+    await sweepStaging("Parasite (2019)");
   }
 
   const history = await historyEntry(final.result.historyId);
@@ -517,6 +580,11 @@ async function cleanup() {
       console.log(`— movie ${tmdbId} already gone`);
       continue;
     }
+    // Never touch titles outside the isolated test root.
+    if (!String(movie.path ?? "").startsWith(`${env("RADARR_MOVIES_ROOT")}/`)) {
+      console.log(`— skipped "${movie.title}" (not in the test root)`);
+      continue;
+    }
     await arr("radarr_movies", `/api/v3/movie/${movie.id}?deleteFiles=true`, {
       method: "DELETE",
     });
@@ -534,8 +602,13 @@ async function cleanup() {
         );
     const found = tv ?? anime;
     const role = tv ? "sonarr_tv" : "sonarr_anime";
+    const root = tv ? env("SONARR_TV_ROOT") : env("SONARR_ANIME_ROOT");
     if (!found) {
       console.log(`— series ${tvdbId} already gone`);
+      continue;
+    }
+    if (!String(found.path ?? "").startsWith(`${root}/`)) {
+      console.log(`— skipped "${found.title}" (not in the test root)`);
       continue;
     }
     await arr(role, `/api/v3/series/${found.id}?deleteFiles=true`, {
@@ -563,6 +636,8 @@ async function main() {
     added: { radarr: [], sonarr: [] },
   };
   const summary = [];
+
+  await cleanSlate();
 
   for (const [id, title, fn] of scenarios) {
     const startedAt = new Date().toISOString();

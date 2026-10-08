@@ -38,12 +38,15 @@ scenario fails.
 
 ## Scenarios
 
-1. **movie** — movie drop → Radarr (non-anime): imported, renamed, history `success`
-2. **tv** — season pack → Sonarr: episodes mapped, only the selected seasons monitored
-3. **anime** — absolute-numbered drop → anime Sonarr: routed to the right category/root/profile
-4. **duplicate** — title already in library: import-only, no duplicate add
-5. **rejections** — an invalid episode is rejected by the *arr and surfaced (job result + history `partial`)
-6. **copy** — copy mode keeps staged files (move mode deletes the staging drop after import)
+Test titles (verified absent from the real libraries): Dune (2021), Severance,
+Cyberpunk: Edgerunners, Andor, Parasite (2019).
+
+1. **movie** — Dune → Radarr (non-anime): imported, renamed, history `success`
+2. **tv** — Severance S01 pack → Sonarr: episodes mapped, only the selected seasons monitored
+3. **anime** — Edgerunners (absolute numbering) → anime Sonarr: routed to the right category/root/profile
+4. **duplicate** — Dune re-drop: import-only, no duplicate add
+5. **rejections** — Andor S01E99 doesn't exist: valid episodes import, the invalid one is rejected and surfaced (history `partial`)
+6. **copy** — Parasite in copy mode keeps staged files (move mode deletes the staging drop after import)
 
 ## Notes
 
