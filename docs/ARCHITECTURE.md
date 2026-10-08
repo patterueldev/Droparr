@@ -63,6 +63,7 @@ HistoryEntry { id, instanceId, kind, title, year, matchedId, titleSlug?, files,
    - absolute numbering (`Show - 01`, `[Group] Show - 12 (1080p)`) → anime-style series (needs ≥ 2 files to be confident)
    - year in folder/file → movie
    - release-tag stripping (`1080p`, `x265`, `WEB-DL`, …) to clean titles
+   - multi-movie drops (≥ 2 sibling folders with videos, no episode patterns) → fan out into one movie item per folder; extras/disc-style folders are not items, loose root files become an extra item, and each item runs its own staging → add → manual-import pipeline with its own history entry
 3. **Match** — query the *target instance's own* lookup API:
    - `GET /api/v3/series/lookup?term=…` (Sonarr / TVDB)
    - `GET /api/v3/movie/lookup?term=…` (Radarr / TMDB)
@@ -174,7 +175,7 @@ Noted alternative: a DNS-only record bypasses the limit but exposes the origin I
 
 ## Edge cases to handle
 
-- multi-movie folders (fan out into N items)
+- multi-movie folders: ≥ 2 sibling movie folders fan out into N independently matchable items (`POST /api/import/batch` runs one pipeline + history entry each; loose root files import as an extra item)
 - anime: absolute numbering, S00 specials, OVAs, fansub junk
 - season packs and multi-season drops; multi-episode files
 - duplicates: title exists (import-only), file exists (skip), re-submission of the same files
