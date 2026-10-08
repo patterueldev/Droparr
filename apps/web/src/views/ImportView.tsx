@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { FolderAnalysis, Instance } from "@droparr/shared";
+import { pickDefaultCategory } from "@droparr/core";
+import type { Category, FolderAnalysis, Instance } from "@droparr/shared";
 import { api, connectJobEvents, formatBytes, type JobEvent } from "../api";
 
 type Step = "pick" | "review" | "running" | "done";
@@ -373,7 +374,7 @@ function ReviewStep({
   seasons: number[];
   importMode: "copy" | "move";
   instances: Instance[];
-  categories: { id: string; name: string; kind: string; instanceId: string }[];
+  categories: Category[];
   busy: boolean;
   onTitleChange: (t: string) => void;
   onYearChange: (y?: number) => void;
@@ -389,12 +390,17 @@ function ReviewStep({
   const eligibleCategories = categories.filter((c) => c.kind === kind);
   const category = eligibleCategories.find((c) => c.id === categoryId);
 
-  // Default to the first eligible category.
+  // Preselect a category from the analysis (anime drops → anime category);
+  // the review always allows an override. Only fires while nothing is selected.
+  const preferredCategory = useMemo(
+    () => pickDefaultCategory(categories, analysis),
+    [categories, analysis],
+  );
   useEffect(() => {
-    if (!categoryId && eligibleCategories.length > 0) {
-      onCategoryChange(eligibleCategories[0].id);
+    if (!categoryId && preferredCategory) {
+      onCategoryChange(preferredCategory.id);
     }
-  }, [categoryId, eligibleCategories, onCategoryChange]);
+  }, [categoryId, preferredCategory, onCategoryChange]);
 
   const instance = instances.find((i) => i.id === category?.instanceId);
 
@@ -746,6 +752,7 @@ function ProgressStep({
     adding: "Adding to library",
     preflight: "Preflight",
     import: "Importing",
+    cleanup: "Cleaning up",
     done: "Done",
     error: "Failed",
   };

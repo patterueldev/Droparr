@@ -12,6 +12,7 @@
     "test": "echo 'no tests yet'"
   },
   "dependencies": {
+    "@droparr/core": "workspace:*",
     "@droparr/shared": "workspace:*",
     "@tanstack/react-query": "^5.59.0",
     "react": "^19.0.0",

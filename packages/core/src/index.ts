@@ -6,3 +6,4 @@ export * from "./arr/radarr.js";
 export * from "./arr/types.js";
 export * from "./staging/paths.js";
 export * from "./staging/planner.js";
+export * from "./routing/pickCategory.js";

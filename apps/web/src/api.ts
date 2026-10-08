@@ -146,6 +146,7 @@ export interface JobEvent {
     | "adding"
     | "preflight"
     | "import"
+    | "cleanup"
     | "done"
     | "error";
   message: string;

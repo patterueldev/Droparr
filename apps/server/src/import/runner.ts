@@ -1,5 +1,5 @@
-import { cp, mkdir, stat } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { cp, mkdir, rm, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import {
   PathMapper,
@@ -288,6 +288,35 @@ export async function runImport(
       throw new Error(final.message ?? `Import command ${final.status}`);
     }
 
+    // --- Staging cleanup ------------------------------------------------
+    // With importMode "move" the *arr has moved everything it accepted out
+    // of the staging drop; remove what is left (rejected files, empty dirs)
+    // so staging doesn't accumulate. The source drop is untouched — staging
+    // is always a copy. Cleanup problems never fail an otherwise good import.
+    if (req.importMode === "move") {
+      if (!isStrictlyInside(stagingBase, plan.stagingDir)) {
+        emit(
+          "cleanup",
+          `Skipped staging cleanup — "${plan.stagingDir}" is outside the staging root`,
+        );
+      } else {
+        try {
+          await rm(plan.stagingDir, { recursive: true, force: true });
+          emit(
+            "cleanup",
+            rejected.length > 0
+              ? `Cleaned staging folder (removed ${rejected.length} rejected file(s))`
+              : "Cleaned staging folder",
+          );
+        } catch (err) {
+          emit(
+            "cleanup",
+            `Staging cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
+
     emit("done", "Import complete", {
       result: {
         importedFiles: importable.length,
@@ -361,6 +390,12 @@ function buildSeasonSelection(
       seasonNumber,
       monitored: monitorSet.has(seasonNumber),
     }));
+}
+
+/** True when `child` is strictly inside `parent` (both resolved). */
+function isStrictlyInside(parent: string, child: string): boolean {
+  const rel = relative(resolve(parent), resolve(child));
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 async function pollCommand(

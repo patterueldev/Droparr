@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigStore } from "../config/store.js";
@@ -60,31 +60,40 @@ describe("runImport (mock Sonarr)", () => {
         }
         if (url.startsWith("/api/v3/manualimport")) {
           const folder = new URL(url, "http://x").searchParams.get("folder");
-          return res.end(
-            JSON.stringify([
-              {
-                path: `${folder}/S01E01.1080p.WEB-DL.mkv`,
-                folderName: "Breaking Bad S01 1080p",
-                series: { id: 7, title: "Breaking Bad" },
-                seasonNumber: 1,
-                episodes: [{ id: 101, episodeNumber: 1, seasonNumber: 1 }],
-                quality: { quality: { id: 5, name: "WEBDL-1080p" } },
-                languages: [{ id: 1, name: "English" }],
-                releaseGroup: "GRP",
-                rejections: [],
-              },
-              {
-                path: `${folder}/S01E02.1080p.WEB-DL.mkv`,
-                folderName: "Breaking Bad S01 1080p",
-                series: { id: 7, title: "Breaking Bad" },
-                seasonNumber: 1,
-                episodes: [{ id: 102, episodeNumber: 2, seasonNumber: 1 }],
-                quality: { quality: { id: 5, name: "WEBDL-1080p" } },
-                languages: [{ id: 1, name: "English" }],
-                rejections: [{ reason: "Sample", type: "permanent" }],
-              },
-            ]),
-          );
+          const items = [
+            {
+              path: `${folder}/S01E01.1080p.WEB-DL.mkv`,
+              folderName: "Breaking Bad S01 1080p",
+              series: { id: 7, title: "Breaking Bad" },
+              seasonNumber: 1,
+              episodes: [{ id: 101, episodeNumber: 1, seasonNumber: 1 }],
+              quality: { quality: { id: 5, name: "WEBDL-1080p" } },
+              languages: [{ id: 1, name: "English" }],
+              releaseGroup: "GRP",
+              rejections: [],
+            },
+            {
+              path: `${folder}/S01E02.1080p.WEB-DL.mkv`,
+              folderName: "Breaking Bad S01 1080p",
+              series: { id: 7, title: "Breaking Bad" },
+              seasonNumber: 1,
+              episodes: [{ id: 102, episodeNumber: 2, seasonNumber: 1 }],
+              quality: { quality: { id: 5, name: "WEBDL-1080p" } },
+              languages: [{ id: 1, name: "English" }],
+              rejections: [{ reason: "Sample", type: "permanent" }],
+            },
+          ];
+          if (folder?.includes("AllRejected")) {
+            return res.end(
+              JSON.stringify(
+                items.map((i) => ({
+                  ...i,
+                  rejections: [{ reason: "Sample", type: "permanent" }],
+                })),
+              ),
+            );
+          }
+          return res.end(JSON.stringify(items));
         }
         if (url === "/api/v3/command" && req.method === "POST") {
           return res.end(
@@ -252,5 +261,86 @@ describe("runImport (mock Sonarr)", () => {
 
     expect(events[events.length - 1].phase).toBe("error");
     expect(events[events.length - 1].error).toContain("not found");
+  });
+
+  it("removes the staging drop folder after a move import (partial included)", async () => {
+    const config = await ConfigStore.load(join(workDir, "config.json"));
+    const db = new Db(join(workDir, "droparr-move.db"));
+    const jobs = new JobRegistry();
+    const events: JobEvent[] = [];
+    jobs.on("event", (e: JobEvent) => events.push(e));
+
+    const moveSource = join(workDir, "incoming", "Move Mode Show");
+    await mkdir(moveSource, { recursive: true });
+    for (const n of ["01", "02"]) {
+      await writeFile(
+        join(moveSource, `S01E${n}.1080p.WEB-DL.mkv`),
+        Buffer.alloc(64, 1),
+      );
+    }
+
+    jobs.create("job-move");
+    await runImport(
+      { config, db, jobs },
+      "job-move",
+      {
+        sourcePath: moveSource,
+        categoryId: "tv",
+        match: {
+          tvdbId: 81189,
+          title: "Move Mode Show",
+          extra: { seasons: [{ seasonNumber: 1 }] },
+        },
+        seasons: [1],
+        importMode: "move",
+      },
+    );
+
+    expect(events[events.length - 1].phase).toBe("done");
+    const cleanup = events.find((e) => e.phase === "cleanup");
+    expect(cleanup?.message).toContain("Cleaned staging folder");
+    expect(cleanup?.message).toContain("1 rejected file");
+    await expect(
+      stat(join(stagingDir, "Move Mode Show")),
+    ).rejects.toThrow();
+    // The source drop is untouched — staging is always a copy.
+    expect((await stat(join(moveSource, "S01E01.1080p.WEB-DL.mkv"))).size).toBe(
+      64,
+    );
+  });
+
+  it("keeps the staging folder when every file was rejected", async () => {
+    const config = await ConfigStore.load(join(workDir, "config.json"));
+    const db = new Db(join(workDir, "droparr-rejected.db"));
+    const jobs = new JobRegistry();
+    const events: JobEvent[] = [];
+    jobs.on("event", (e: JobEvent) => events.push(e));
+
+    const rejectedSource = join(workDir, "incoming", "AllRejected Show");
+    await mkdir(rejectedSource, { recursive: true });
+    await writeFile(
+      join(rejectedSource, "S01E01.1080p.WEB-DL.mkv"),
+      Buffer.alloc(64, 1),
+    );
+
+    jobs.create("job-rejected");
+    await runImport(
+      { config, db, jobs },
+      "job-rejected",
+      {
+        sourcePath: rejectedSource,
+        categoryId: "tv",
+        match: { tvdbId: 81189, title: "AllRejected Show" },
+        importMode: "move",
+      },
+    );
+
+    expect(events[events.length - 1].phase).toBe("error");
+    expect(events[events.length - 1].error).toContain("All files were rejected");
+    // Staging is kept for inspection, and no cleanup event was emitted.
+    expect(
+      (await stat(join(stagingDir, "AllRejected Show"))).isDirectory(),
+    ).toBe(true);
+    expect(events.some((e) => e.phase === "cleanup")).toBe(false);
   });
 });

@@ -6,6 +6,7 @@ export type JobPhase =
   | "adding"
   | "preflight"
   | "import"
+  | "cleanup"
   | "done"
   | "error";
 

@@ -57,6 +57,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@droparr/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@droparr/shared':
         specifier: workspace:*
         version: link:../../packages/shared
