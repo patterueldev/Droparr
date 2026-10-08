@@ -146,6 +146,19 @@ export interface FolderAnalysis {
   reasoning: string[];
 }
 
+/**
+ * One reviewable/importable item of a drop. A plain drop yields a single item
+ * (`subPath: ""`); a multi-movie drop fans out into one item per sibling
+ * movie folder. File paths stay relative to the drop root.
+ */
+export interface FolderAnalysisItem extends FolderAnalysis {
+  /**
+   * Path from the drop root to this item's folder (`"A (2001)"`), or `""`
+   * when the item's files sit at the drop root itself.
+   */
+  subPath: string;
+}
+
 export interface Submission {
   id: string;
   submitterId: string;

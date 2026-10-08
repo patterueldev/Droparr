@@ -1,4 +1,9 @@
-import type { FileRef, FolderAnalysis, SeriesType } from "@droparr/shared";
+import type {
+  FileRef,
+  FolderAnalysis,
+  FolderAnalysisItem,
+  SeriesType,
+} from "@droparr/shared";
 import {
   cleanTitle,
   extractYear,
@@ -161,6 +166,118 @@ export function analyzeFolder(input: AnalyzeInput): FolderAnalysis {
     confidence,
     reasoning,
   };
+}
+
+/** Result of `analyzeDrop`: the whole-drop analysis plus reviewable items. */
+export interface DropAnalysis {
+  /** Whole-drop analysis (the existing single-item heuristics). */
+  analysis: FolderAnalysis;
+  /**
+   * Items to review and import. Always at least one; length > 1 when the
+   * drop fanned out into multiple movies.
+   */
+  items: FolderAnalysisItem[];
+}
+
+/** Extras folders that never become fan-out items. */
+const EXTRAS_FOLDER_PATTERN =
+  /^(extras?|featurettes?|behind[ ._-]?the[ ._-]?scenes|deleted[ ._-]?scenes|interviews?|trailers?|samples?|specials?)$/i;
+
+/** Folders that split one movie at the drop root (Disc1/Disc2, Part 1/Part 2…). */
+const DISC_FOLDER_PATTERN = /^(disc|cd|dvd|part|pt|vol|volume)[ ._-]*\d+$/i;
+
+/**
+ * Analyze a dropped folder into importable items.
+ *
+ * A drop whose videos all live in sibling folders — with no episode patterns
+ * anywhere — is a multi-movie drop: it fans out into one movie item per
+ * sibling folder, plus one item for loose video files at the drop root.
+ * Series and single-folder movie drops keep the existing single-item
+ * behavior (`items: [whole analysis]`, `subPath: ""`).
+ */
+export function analyzeDrop(input: AnalyzeInput): DropAnalysis {
+  const analysis = analyzeFolder(input);
+  const single: FolderAnalysisItem = { ...analysis, subPath: "" };
+
+  // Episode-numbered drops (series/anime) always stay a single item.
+  if (analysis.kind === "series") {
+    return { analysis, items: [single] };
+  }
+
+  const media = input.files.filter((f) => isMediaFile(basename(f)));
+  const videos = media.filter((f) => isVideoFile(basename(f)));
+
+  // Group videos by their first path segment: the sibling folders of the drop.
+  const folders: string[] = [];
+  const looseVideos: string[] = [];
+  for (const video of videos) {
+    const parts = video.split("/").filter(Boolean);
+    if (parts.length <= 1) {
+      looseVideos.push(video);
+      continue;
+    }
+    if (!folders.includes(parts[0])) folders.push(parts[0]);
+  }
+
+  const candidates = folders.filter(
+    (name) =>
+      !EXTRAS_FOLDER_PATTERN.test(name) && !DISC_FOLDER_PATTERN.test(name),
+  );
+
+  // Fan out only for multiple sibling movie folders.
+  if (candidates.length < 2) {
+    return { analysis, items: [single] };
+  }
+
+  const excluded = folders.filter((n) => !candidates.includes(n));
+  const total = candidates.length + (looseVideos.length > 0 ? 1 : 0);
+
+  analysis.reasoning.push(
+    `Fanned out into ${total} items (${candidates.length} sibling movie folder(s)` +
+      (looseVideos.length > 0
+        ? ` + ${looseVideos.length} loose root file(s)`
+        : "") +
+      ")",
+  );
+  if (excluded.length > 0) {
+    analysis.reasoning.push(
+      `Ignored non-movie sibling folder(s): ${excluded.join(", ")}`,
+    );
+  }
+
+  const items: FolderAnalysisItem[] = [];
+  const fanoutNote = (index: number) =>
+    `Part of a multi-movie drop (item ${index} of ${total})`;
+
+  for (const folder of candidates) {
+    // Analyze the group in place: its common top folder is the movie folder,
+    // so title/year come from the folder name just like a single drop.
+    const groupFiles = media.filter((f) => f.startsWith(`${folder}/`));
+    const sub = analyzeFolder({
+      files: groupFiles,
+      sizes: input.sizes,
+      dropName: folder,
+    });
+    items.push({
+      ...sub,
+      subPath: folder,
+      reasoning: [fanoutNote(items.length + 1), ...sub.reasoning],
+    });
+  }
+
+  if (looseVideos.length > 0) {
+    // Root-level files are not inside a sibling folder; they become an extra
+    // item of their own so nothing in the drop is lost.
+    const looseFiles = media.filter((f) => !f.includes("/"));
+    const sub = analyzeFolder({ files: looseFiles, sizes: input.sizes });
+    items.push({
+      ...sub,
+      subPath: "",
+      reasoning: [fanoutNote(items.length + 1), ...sub.reasoning],
+    });
+  }
+
+  return { analysis, items };
 }
 
 function basename(p: string): string {
