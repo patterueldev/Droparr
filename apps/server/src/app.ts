@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { ConfigStore } from "./config/store.js";
 import { Db } from "./db.js";
 import { JobRegistry } from "./jobs.js";
+import { QuarantineCleanup } from "./uploads/cleanup.js";
 import { UploadEventBus } from "./uploads/events.js";
 import { UploadLocks } from "./uploads/locks.js";
 import { resolveUploadSettings } from "./uploads/settings.js";
@@ -43,6 +44,7 @@ export interface BuiltApp {
   jobs: JobRegistry;
   uploads: UploadEventBus;
   uploadLocks: UploadLocks;
+  cleanup: QuarantineCleanup;
   authEvents: AuthEvents;
 }
 
@@ -65,6 +67,16 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
   const app = Fastify({
     logger: opts.logger ?? { level: process.env.LOG_LEVEL ?? "info" },
     trustProxy: true,
+  });
+
+  // Quarantine sweep: created here so routes/tests can use it; the timer is
+  // only started by the server entrypoint (index.ts).
+  const cleanup = new QuarantineCleanup({
+    db,
+    events: uploads,
+    locks: uploadLocks,
+    getSettings: () => resolveUploadSettings(config.get(), dataDir),
+    log: { warn: (obj, msg) => app.log.warn(obj, msg) },
   });
 
   // Browser clients are served same-origin (Vite proxies /api in dev), so CORS
@@ -104,7 +116,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
   });
   importRoutes(app, { config, db, jobs });
   historyRoutes(app, db);
-  settingsRoutes(app, config, dataDir);
+  settingsRoutes(app, config, dataDir, { cleanup });
   uploadRoutes(app, {
     db,
     events: uploads,
@@ -171,5 +183,5 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
     }
   }
 
-  return { app, config, db, jobs, uploads, uploadLocks, authEvents };
+  return { app, config, db, jobs, uploads, uploadLocks, cleanup, authEvents };
 }

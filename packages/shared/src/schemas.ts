@@ -78,6 +78,8 @@ export const uploadSettingsSchema = z.object({
   quarantineDir: z.string().optional(),
   maxFileSizeBytes: z.number().int().nonnegative().optional(),
   maxSubmissionSizeBytes: z.number().int().nonnegative().optional(),
+  minFreeSpaceBytes: z.number().int().nonnegative().optional(),
+  retentionDays: z.number().int().nonnegative().optional(),
 });
 
 export const droparrConfigSchema = z.object({

@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { mkdir, open, rm } from "node:fs/promises";
+import { mkdir, open } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import type { Readable } from "node:stream";
 import { nanoid } from "nanoid";
@@ -12,6 +12,13 @@ import {
   type UploadState,
 } from "@droparr/shared";
 import type { Db } from "../db.js";
+import { removeUpload } from "../uploads/cleanup.js";
+import {
+  formatBytes,
+  isDiskFullError,
+  statfsFreeBytes,
+  type FreeBytesProbe,
+} from "../uploads/disk.js";
 import type { UploadEventBus } from "../uploads/events.js";
 import type { UploadLocks } from "../uploads/locks.js";
 import { parseUploadMetadata } from "../uploads/metadata.js";
@@ -34,6 +41,8 @@ export interface UploadRouteDeps {
   getSettings: () => UploadSettings;
   /** Max accepted PATCH body; tests lower it. Defaults to the 32 MiB chunk. */
   maxChunkSizeBytes?: number;
+  /** Free-space probe (statfs by default); tests inject a fake. */
+  freeBytes?: FreeBytesProbe;
 }
 
 class UploadHttpError extends Error {
@@ -66,6 +75,25 @@ function setTusHeaders(
   reply.header("Tus-Resumable", TUS_VERSION);
   for (const [key, value] of Object.entries(extra)) {
     reply.header(key, value);
+  }
+}
+
+/**
+ * Bytes free on the quarantine volume. The probe fails open (returns
+ * Infinity) when statfs cannot run — ENOSPC handling in the write path is
+ * the backstop, and a broken probe must not take uploads down entirely.
+ */
+async function probeFreeBytes(
+  deps: UploadRouteDeps,
+  log: FastifyRequest["log"],
+): Promise<number> {
+  const { quarantineDir } = deps.getSettings();
+  try {
+    await mkdir(quarantineDir, { recursive: true });
+    return await (deps.freeBytes ?? statfsFreeBytes)(quarantineDir);
+  } catch (err) {
+    log.warn({ err, quarantineDir }, "free-space probe failed");
+    return Number.POSITIVE_INFINITY;
   }
 }
 
@@ -176,6 +204,19 @@ export function uploadRoutes(app: FastifyInstance, deps: UploadRouteDeps): void 
           error: `Submission exceeds the per-drop limit (${settings.maxSubmissionSizeBytes} bytes)`,
         });
       }
+
+      // Disk guard: refuse new uploads when the quarantine volume is running
+      // low. 507 tells tus-js-client not to retry (unlike 5xx) and the UI
+      // surfaces the server message.
+      if (settings.minFreeSpaceBytes > 0) {
+        const free = await probeFreeBytes(deps, req.log);
+        if (free < settings.minFreeSpaceBytes) {
+          return reply.code(507).send({
+            error: `Not enough free space on the server: ${formatBytes(free)} free, ${formatBytes(settings.minFreeSpaceBytes)} required headroom`,
+          });
+        }
+      }
+
       if (deps.db.findUploadByRelPath(dropId, relPath)) {
         return reply
           .code(409)
@@ -309,13 +350,34 @@ export function uploadRoutes(app: FastifyInstance, deps: UploadRouteDeps): void 
         deps.locks.release(upload.id);
       };
       try {
+        const settings = deps.getSettings();
+
+        // Disk guard: below the configured floor the upload is aborted and
+        // its partial file removed — a full volume must not leave
+        // half-written drops behind. 507 is not retried by tus clients.
+        if (settings.minFreeSpaceBytes > 0) {
+          const free = await probeFreeBytes(deps, req.log);
+          if (free < settings.minFreeSpaceBytes) {
+            await removeUpload(deps, upload).catch((removeErr) => {
+              req.log.warn(
+                { err: removeErr, uploadId: upload.id },
+                "failed to remove aborted upload",
+              );
+            });
+            setTusHeaders(reply, { "Upload-Offset": String(upload.offset) });
+            return reply.code(507).send({
+              error: `Not enough free space on the server: ${formatBytes(free)} free, ${formatBytes(settings.minFreeSpaceBytes)} required headroom — the partial upload was removed`,
+            });
+          }
+        }
+
         const body = req.body as Readable | undefined;
         if (!body || typeof body[Symbol.asyncIterator] !== "function") {
           return reply.code(400).send({ error: "Missing request body" });
         }
 
         const target = resolveUploadTarget(
-          deps.getSettings().quarantineDir,
+          settings.quarantineDir,
           upload.dropId,
           upload.relPath,
         );
@@ -389,6 +451,21 @@ export function uploadRoutes(app: FastifyInstance, deps: UploadRouteDeps): void 
             setTusHeaders(reply, { "Upload-Offset": String(upload.offset) });
             return reply.code(err.status).send({ error: err.message });
           }
+          // A volume that actually filled up (write or fsync hit ENOSPC):
+          // remove the partial file so the drop can't stay half-written.
+          if (isDiskFullError(err)) {
+            await handle.close().catch(() => {});
+            await removeUpload(deps, upload).catch((removeErr) => {
+              req.log.warn(
+                { err: removeErr, uploadId: upload.id },
+                "failed to remove aborted upload",
+              );
+            });
+            setTusHeaders(reply, { "Upload-Offset": String(upload.offset) });
+            return reply.code(507).send({
+              error: "Server storage is full — the partial upload was removed",
+            });
+          }
           req.log.warn({ err, uploadId: upload.id }, "upload chunk write failed");
           if (!reply.raw.headersSent && !req.raw.destroyed) {
             return reply.code(500).send({ error: "Upload failed" });
@@ -423,24 +500,7 @@ export function uploadRoutes(app: FastifyInstance, deps: UploadRouteDeps): void 
         deps.locks.release(upload.id);
       };
       try {
-        deps.db.deleteUpload(upload.id);
-        await rm(
-          resolveUploadTarget(
-            deps.getSettings().quarantineDir,
-            upload.dropId,
-            upload.relPath,
-          ),
-          { force: true },
-        );
-        deps.events.emitUpload({
-          action: "deleted",
-          uploadId: upload.id,
-          dropId: upload.dropId,
-          filename: upload.filename,
-          relPath: upload.relPath,
-          offset: upload.offset,
-          size: upload.size,
-        });
+        await removeUpload(deps, upload);
         releaseLock();
         setTusHeaders(reply);
         return reply.code(204).send();

@@ -2,6 +2,8 @@ import { join, resolve } from "node:path";
 import {
   DEFAULT_MAX_SUBMISSION_SIZE_BYTES,
   DEFAULT_MAX_UPLOAD_FILE_SIZE_BYTES,
+  DEFAULT_MIN_FREE_SPACE_BYTES,
+  DEFAULT_RETENTION_DAYS,
   type DroparrConfig,
 } from "@droparr/shared";
 
@@ -13,6 +15,10 @@ export interface UploadSettings {
   maxFileSizeBytes: number;
   /** Per-drop cap in bytes; 0 = unlimited. */
   maxSubmissionSizeBytes: number;
+  /** Free-space headroom in bytes; 0 = guard disabled. */
+  minFreeSpaceBytes: number;
+  /** Quarantine retention in days; 0 = keep forever. */
+  retentionDays: number;
 }
 
 export function resolveUploadSettings(
@@ -27,5 +33,8 @@ export function resolveUploadSettings(
     maxSubmissionSizeBytes:
       config.uploads?.maxSubmissionSizeBytes ??
       DEFAULT_MAX_SUBMISSION_SIZE_BYTES,
+    minFreeSpaceBytes:
+      config.uploads?.minFreeSpaceBytes ?? DEFAULT_MIN_FREE_SPACE_BYTES,
+    retentionDays: config.uploads?.retentionDays ?? DEFAULT_RETENTION_DAYS,
   };
 }

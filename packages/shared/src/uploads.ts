@@ -7,6 +7,18 @@ export const UPLOAD_CHUNK_SIZE_BYTES = 32 * 1024 * 1024;
 export const DEFAULT_MAX_UPLOAD_FILE_SIZE_BYTES = 64 * 1024 ** 3; // 64 GiB
 export const DEFAULT_MAX_SUBMISSION_SIZE_BYTES = 256 * 1024 ** 3; // 256 GiB
 
+/**
+ * Free-space headroom kept on the quarantine volume: new uploads are refused
+ * (and running ones aborted + removed) below this. 0 disables the guard.
+ */
+export const DEFAULT_MIN_FREE_SPACE_BYTES = 10 * 1024 ** 3; // 10 GiB
+
+/**
+ * Days a quarantined drop is kept after it finishes (or after its last
+ * write) before the cleanup sweep removes it. 0 keeps files forever.
+ */
+export const DEFAULT_RETENTION_DAYS = 7;
+
 export type UploadState = "uploading" | "complete" | "cancelled";
 
 /** One in-progress or finished file upload, stored in SQLite. */
