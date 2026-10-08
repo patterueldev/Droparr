@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Category, Instance } from "@droparr/shared";
 import { api } from "../api";
@@ -136,6 +136,7 @@ function InstancesSection({
   const [testResults, setTestResults] = useState<
     Record<string, { ok: boolean; text: string }>
   >({});
+  const autoTested = useRef<Set<string>>(new Set());
 
   const startEdit = (i: Instance) => {
     setEditingId(i.id);
@@ -153,6 +154,8 @@ function InstancesSection({
     try {
       if (editingId) {
         await api.updateInstance(editingId, draft);
+        // Connection values may have changed — re-test.
+        autoTested.current.delete(editingId);
       } else {
         await api.createInstance(draft);
       }
@@ -164,24 +167,37 @@ function InstancesSection({
     }
   };
 
-  const test = async (id: string) => {
-    setTestResults((r) => ({ ...r, [id]: { ok: false, text: "Testing…" } }));
-    try {
-      const res = await api.testInstance(id);
-      setTestResults((r) => ({
-        ...r,
-        [id]: {
-          ok: true,
-          text: `✓ ${res.appName} ${res.version ?? ""}`,
-        },
-      }));
-    } catch (err) {
-      setTestResults((r) => ({
-        ...r,
-        [id]: { ok: false, text: `✗ ${err instanceof Error ? err.message : String(err)}` },
-      }));
+  const test = useCallback(
+    async (id: string) => {
+      setTestResults((r) => ({ ...r, [id]: { ok: false, text: "Checking…" } }));
+      try {
+        const res = await api.testInstance(id);
+        setTestResults((r) => ({
+          ...r,
+          [id]: { ok: true, text: `${res.appName} ${res.version ?? ""}` },
+        }));
+      } catch (err) {
+        setTestResults((r) => ({
+          ...r,
+          [id]: {
+            ok: false,
+            text: err instanceof Error ? err.message : String(err),
+          },
+        }));
+      }
+    },
+    [],
+  );
+
+  // Auto-check each saved instance once when Settings loads.
+  useEffect(() => {
+    for (const i of instances) {
+      if (!autoTested.current.has(i.id)) {
+        autoTested.current.add(i.id);
+        void test(i.id);
+      }
     }
-  };
+  }, [instances, test]);
 
   return (
     <Section
@@ -189,65 +205,81 @@ function InstancesSection({
       subtitle="Your Sonarr/Radarr instances. Path mappings translate Droparr paths to each instance's view of the same volume."
     >
       <div className="space-y-2">
-        {instances.map((i) => (
-          <div
-            key={i.id}
-            className="rounded-lg border border-zinc-800 bg-zinc-900/50 px-4 py-3 flex items-center gap-4"
-          >
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium">{i.name}</span>
-                <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
-                  {i.kind}
-                </span>
-              </div>
-              <div className="text-xs text-zinc-500 font-mono truncate">
-                {i.baseUrl}
-                {i.pathMappings.length > 0 && (
-                  <>
-                    {" "}
-                    ·{" "}
-                    {i.pathMappings
-                      .map((m) => `${m.app} → ${m.remote}`)
-                      .join(", ")}
-                  </>
+        {instances.map((i) => {
+          const t = testResults[i.id];
+          return (
+            <div
+              key={i.id}
+              className="rounded-lg border border-zinc-800 bg-zinc-900/50 px-4 py-3 flex items-center gap-4"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  {/* Connection status dot */}
+                  <span
+                    title={t?.text ?? "Not checked yet"}
+                    className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                      !t
+                        ? "bg-zinc-600"
+                        : t.text === "Checking…"
+                          ? "bg-amber-400 animate-pulse"
+                          : t.ok
+                            ? "bg-emerald-500"
+                            : "bg-red-500"
+                    }`}
+                  />
+                  <span className="text-sm font-medium">{i.name}</span>
+                  <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
+                    {i.kind}
+                  </span>
+                </div>
+                <div className="text-xs text-zinc-500 font-mono truncate">
+                  {i.baseUrl}
+                  {i.pathMappings.length > 0 && (
+                    <>
+                      {" "}
+                      ·{" "}
+                      {i.pathMappings
+                        .map((m) => `${m.app} → ${m.remote}`)
+                        .join(", ")}
+                    </>
+                  )}
+                </div>
+                {t && t.text !== "Checking…" && (
+                  <div
+                    className={`text-xs mt-1 ${
+                      t.ok ? "text-emerald-400" : "text-red-400"
+                    }`}
+                  >
+                    {t.ok ? "✓" : "✗"} {t.text}
+                  </div>
                 )}
               </div>
-              {testResults[i.id] && (
-                <div
-                  className={`text-xs mt-1 ${
-                    testResults[i.id].ok ? "text-emerald-400" : "text-red-400"
-                  }`}
-                >
-                  {testResults[i.id].text}
-                </div>
-              )}
+              <button
+                onClick={() => test(i.id)}
+                className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+              >
+                Test
+              </button>
+              <button
+                onClick={() => startEdit(i)}
+                className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+              >
+                Edit
+              </button>
+              <button
+                onClick={async () => {
+                  if (confirm(`Delete instance "${i.name}"? Categories using it will be removed.`)) {
+                    await api.deleteInstance(i.id);
+                    onChanged();
+                  }
+                }}
+                className="rounded border border-red-900 px-3 py-1.5 text-xs text-red-400 hover:bg-red-950/40"
+              >
+                Delete
+              </button>
             </div>
-            <button
-              onClick={() => test(i.id)}
-              className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
-            >
-              Test
-            </button>
-            <button
-              onClick={() => startEdit(i)}
-              className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
-            >
-              Edit
-            </button>
-            <button
-              onClick={async () => {
-                if (confirm(`Delete instance "${i.name}"? Categories using it will be removed.`)) {
-                  await api.deleteInstance(i.id);
-                  onChanged();
-                }
-              }}
-              className="rounded border border-red-900 px-3 py-1.5 text-xs text-red-400 hover:bg-red-950/40"
-            >
-              Delete
-            </button>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {draft ? (
@@ -291,6 +323,37 @@ function InstanceForm({
 }) {
   const set = (patch: Partial<typeof EMPTY_INSTANCE>) =>
     onChange({ ...draft, ...patch });
+
+  const [testResult, setTestResult] = useState<{
+    ok: boolean;
+    text: string;
+  } | null>(null);
+  const [testing, setTesting] = useState(false);
+
+  const canTest = !!draft.baseUrl && !!draft.apiKey;
+
+  const testConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await api.testDraftInstance({
+        kind: draft.kind,
+        baseUrl: draft.baseUrl,
+        apiKey: draft.apiKey,
+      });
+      setTestResult({
+        ok: true,
+        text: `Connected — ${res.appName} ${res.version ?? ""}`.trim(),
+      });
+    } catch (err) {
+      setTestResult({
+        ok: false,
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
 
   return (
     <div className="rounded-lg border border-zinc-700 bg-zinc-900/70 p-4 space-y-3">
@@ -382,20 +445,38 @@ function InstanceForm({
         </button>
       </div>
 
-      <div className="flex gap-2 justify-end">
+      <div className="flex items-center gap-2">
         <button
-          onClick={onCancel}
-          className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
+          onClick={testConnection}
+          disabled={!canTest || testing}
+          className="rounded-md border border-zinc-600 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
         >
-          Cancel
+          {testing ? "Testing…" : "Test"}
         </button>
-        <button
-          onClick={onSave}
-          disabled={!draft.name || !draft.baseUrl || !draft.apiKey}
-          className="rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 px-4 py-2 text-sm font-medium"
-        >
-          {editing ? "Save changes" : "Add instance"}
-        </button>
+        {testResult && (
+          <span
+            className={`text-xs ${
+              testResult.ok ? "text-emerald-400" : "text-red-400"
+            }`}
+          >
+            {testResult.ok ? "✓" : "✗"} {testResult.text}
+          </span>
+        )}
+        <div className="flex gap-2 ml-auto">
+          <button
+            onClick={onCancel}
+            className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onSave}
+            disabled={!draft.name || !draft.baseUrl || !draft.apiKey}
+            className="rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 px-4 py-2 text-sm font-medium"
+          >
+            {editing ? "Save changes" : "Add instance"}
+          </button>
+        </div>
       </div>
     </div>
   );

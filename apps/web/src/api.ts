@@ -53,6 +53,12 @@ export const api = {
       `/api/instances/${id}/test`,
       { method: "POST" },
     ),
+  /** Test unsaved values (the Test button in the add/edit form). */
+  testDraftInstance: (body: { kind: "series" | "movie"; baseUrl: string; apiKey: string }) =>
+    request<{ ok: boolean; appName?: string; version?: string; error?: string }>(
+      "/api/instances/test",
+      { method: "POST", body },
+    ),
   dropdowns: (id: string) =>
     request<{
       rootFolders: { id: number; path: string; accessible: boolean }[];

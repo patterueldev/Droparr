@@ -9,6 +9,22 @@ const instanceInputSchema = instanceSchema.omit({ id: true }).extend({
   pathMappings: z.array(pathMappingSchema).default([]),
 });
 
+const connectionTestSchema = z.object({
+  kind: instanceSchema.shape.kind,
+  baseUrl: instanceSchema.shape.baseUrl,
+  apiKey: instanceSchema.shape.apiKey,
+});
+
+/** Test a Sonarr/Radarr connection; returns status info or a human error. */
+async function testConnection(kind: "series" | "movie", baseUrl: string, apiKey: string) {
+  const client =
+    kind === "series"
+      ? new SonarrClient({ baseUrl, apiKey })
+      : new RadarrClient({ baseUrl, apiKey });
+  const status = await client.systemStatus();
+  return { appName: status.appName, version: status.version };
+}
+
 export function instanceRoutes(app: FastifyInstance, config: ConfigStore): void {
   app.get("/api/instances", async () => config.listInstances());
 
@@ -48,17 +64,41 @@ export function instanceRoutes(app: FastifyInstance, config: ConfigStore): void 
     return reply.code(204).send();
   });
 
-  /** Connection test — also used as a lightweight health check in the UI. */
+  /**
+   * Test unsaved connection values — the "Test" button in the add/edit form,
+   * like the *arrs' own instance editor.
+   */
+  app.post("/api/instances/test", async (req, reply) => {
+    const parsed = connectionTestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: parsed.error.flatten() });
+    }
+    try {
+      const result = await testConnection(
+        parsed.data.kind,
+        parsed.data.baseUrl,
+        parsed.data.apiKey,
+      );
+      return { ok: true, ...result };
+    } catch (err) {
+      return reply.code(502).send({
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
+  /** Connection test for a saved instance. */
   app.post<{ Params: { id: string } }>("/api/instances/:id/test", async (req, reply) => {
     const instance = config.getInstance(req.params.id);
     if (!instance) return reply.code(404).send({ error: "Instance not found" });
     try {
-      const client =
-        instance.kind === "series"
-          ? new SonarrClient({ baseUrl: instance.baseUrl, apiKey: instance.apiKey })
-          : new RadarrClient({ baseUrl: instance.baseUrl, apiKey: instance.apiKey });
-      const status = await client.systemStatus();
-      return { ok: true, appName: status.appName, version: status.version };
+      const result = await testConnection(
+        instance.kind,
+        instance.baseUrl,
+        instance.apiKey,
+      );
+      return { ok: true, ...result };
     } catch (err) {
       return reply.code(502).send({
         ok: false,

@@ -74,11 +74,19 @@ export class ArrClient {
     } catch (err) {
       if (err instanceof ArrError) throw err;
       if (err instanceof Error && err.name === "AbortError") {
-        throw new ArrError(`*arr API ${method} ${path} timed out`);
+        throw new ArrError(
+          `*arr API ${method} ${path} timed out (${this.baseUrl})`,
+        );
       }
-      throw new ArrError(
-        `*arr API ${method} ${path} failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      // Node fetch wraps network errors ("fetch failed") — surface the cause
+      // so connection problems are actionable (ECONNREFUSED, ENOTFOUND, …).
+      const cause = (err as { cause?: Error }).cause;
+      const detail = cause?.message
+        ? `${err instanceof Error ? err.message : String(err)} (${cause.message})`
+        : err instanceof Error
+          ? err.message
+          : String(err);
+      throw new ArrError(`*arr API ${method} ${path} failed: ${detail}`);
     } finally {
       clearTimeout(timer);
     }
