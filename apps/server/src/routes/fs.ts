@@ -9,12 +9,18 @@ import { walkMediaFiles } from "../fs/walk.js";
  * Server-side path browsing + drop analysis.
  *
  * Security: paths are resolved to absolute; browsing is restricted to
- * DROPARR_BROWSE_ROOTS (colon-separated) when set, else any absolute path
+ * DROPARR_BROWSE_ROOTS (colon-separated) when set, plus any extra roots
+ * (the upload quarantine dir). Else any absolute path
  * (M1 is admin-only, LAN/dev — M2 adds auth + this stays admin-only).
  */
-export function fsRoutes(app: FastifyInstance): void {
-  const roots = (process.env.DROPARR_BROWSE_ROOTS ?? "")
-    .split(":")
+export function fsRoutes(
+  app: FastifyInstance,
+  options: { extraRoots?: string[] } = {},
+): void {
+  const roots = [
+    ...(process.env.DROPARR_BROWSE_ROOTS ?? "").split(":"),
+    ...(options.extraRoots ?? []),
+  ]
     .filter(Boolean)
     .map((r) => resolve(r));
 

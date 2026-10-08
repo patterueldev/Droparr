@@ -140,6 +140,7 @@ export class ConfigStore {
 
   async updateSettings(patch: {
     stagingDir?: string;
+    uploads?: DroparrConfig["uploads"];
     jellyfin?: DroparrConfig["jellyfin"];
     llm?: DroparrConfig["llm"];
   }): Promise<DroparrConfig> {

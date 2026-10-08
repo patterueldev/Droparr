@@ -7,12 +7,16 @@ import { join } from "node:path";
 import { ConfigStore } from "./config/store.js";
 import { Db } from "./db.js";
 import { JobRegistry } from "./jobs.js";
+import { UploadEventBus } from "./uploads/events.js";
+import { UploadLocks } from "./uploads/locks.js";
+import { resolveUploadSettings } from "./uploads/settings.js";
 import { instanceRoutes } from "./routes/instances.js";
 import { categoryRoutes } from "./routes/categories.js";
 import { fsRoutes } from "./routes/fs.js";
 import { importRoutes } from "./routes/import.js";
 import { historyRoutes } from "./routes/history.js";
 import { settingsRoutes } from "./routes/settings.js";
+import { uploadRoutes } from "./routes/uploads.js";
 
 const PORT = Number(process.env.PORT ?? 3100);
 const HOST = process.env.HOST ?? "127.0.0.1";
@@ -22,6 +26,8 @@ async function main(): Promise<void> {
   const config = await ConfigStore.load(process.env.DROPARR_CONFIG);
   const db = new Db(join(dataDir, "droparr.db"));
   const jobs = new JobRegistry();
+  const uploads = new UploadEventBus();
+  const uploadLocks = new UploadLocks();
 
   const app = Fastify({
     logger: {
@@ -33,28 +39,50 @@ async function main(): Promise<void> {
   await app.register(cors, {
     origin: true,
     credentials: true,
+    exposedHeaders: [
+      "Location",
+      "Upload-Offset",
+      "Upload-Length",
+      "Tus-Resumable",
+    ],
   });
   await app.register(websocket);
 
   // API routes
   instanceRoutes(app, config);
   categoryRoutes(app, config);
-  fsRoutes(app);
+  fsRoutes(app, {
+    extraRoots: [resolveUploadSettings(config.get(), dataDir).quarantineDir],
+  });
   importRoutes(app, { config, db, jobs });
   historyRoutes(app, db);
-  settingsRoutes(app, config);
+  settingsRoutes(app, config, dataDir);
+  uploadRoutes(app, {
+    db,
+    events: uploads,
+    locks: uploadLocks,
+    getSettings: () => resolveUploadSettings(config.get(), dataDir),
+  });
 
-  // Live progress stream. Every job event is broadcast; the client filters
-  // by jobId. `GET /api/jobs/:id` replays events after a reconnect.
+  // Live progress stream. Every job/upload event is broadcast; job clients
+  // filter by jobId, upload clients by dropId. `GET /api/jobs/:id` replays
+  // job events after a reconnect.
   app.get("/api/ws", { websocket: true }, (socket) => {
-    const onEvent = (event: unknown) => {
+    const onJobEvent = (event: unknown) => {
+      if (socket.readyState === 1) {
+        socket.send(JSON.stringify({ type: "job", ...(event as object) }));
+      }
+    };
+    const onUploadEvent = (event: unknown) => {
       if (socket.readyState === 1) {
         socket.send(JSON.stringify(event));
       }
     };
-    jobs.on("event", onEvent);
+    jobs.on("event", onJobEvent);
+    uploads.on("event", onUploadEvent);
     socket.on("close", () => {
-      jobs.off("event", onEvent);
+      jobs.off("event", onJobEvent);
+      uploads.off("event", onUploadEvent);
     });
   });
 
