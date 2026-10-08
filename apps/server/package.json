@@ -15,7 +15,9 @@
   "dependencies": {
     "@droparr/core": "workspace:*",
     "@droparr/shared": "workspace:*",
+    "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^10.0.0",
+    "@fastify/rate-limit": "^11.2.0",
     "@fastify/static": "^8.0.0",
     "@fastify/websocket": "^11.0.0",
     "better-sqlite3": "^11.5.0",

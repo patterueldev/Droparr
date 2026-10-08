@@ -30,12 +30,14 @@ export default function SettingsView() {
         stagingDir={settings?.stagingDir ?? ""}
         onSaved={refresh}
       />
+      <JellyfinSection jellyfin={settings?.jellyfin} onSaved={refresh} />
       <InstancesSection instances={instances} onChanged={refresh} />
       <CategoriesSection
         categories={categories}
         instances={instances}
         onChanged={refresh}
       />
+      <SessionsSection />
       <BackupSection onChanged={refresh} />
     </div>
   );
@@ -113,6 +115,103 @@ function StagingSection({
         </button>
       </div>
       {status && <p className="text-xs text-zinc-400">{status}</p>}
+    </Section>
+  );
+}
+
+function JellyfinSection({
+  jellyfin,
+  onSaved,
+}: {
+  jellyfin?: { baseUrl: string; apiKey?: string };
+  onSaved: () => void;
+}) {
+  const [value, setValue] = useState(jellyfin?.baseUrl ?? "");
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(
+    null,
+  );
+
+  // Keep in sync when loaded.
+  if (!dirty && jellyfin?.baseUrl && value !== jellyfin.baseUrl) {
+    setValue(jellyfin.baseUrl);
+  }
+
+  const test = async () => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      const res = await api.jellyfinTestSaved(value.trim());
+      setStatus({
+        ok: true,
+        text: `Connected — ${res.serverName ?? "Jellyfin"} ${res.version ?? ""}`.trim(),
+      });
+    } catch (err) {
+      setStatus({
+        ok: false,
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const save = async () => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      await api.updateSettings({ jellyfin: { baseUrl: value.trim() } });
+      setStatus({ ok: true, text: "Saved" });
+      setDirty(false);
+      onSaved();
+    } catch (err) {
+      setStatus({
+        ok: false,
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section
+      title="Jellyfin"
+      subtitle="Server used for login. Users sign in with their Jellyfin accounts; admins become Droparr admins."
+    >
+      <div className="flex flex-wrap gap-2">
+        <input
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setDirty(true);
+          }}
+          placeholder="http://192.168.1.10:8096"
+          className="input font-mono flex-1 min-w-[16rem]"
+        />
+        <button
+          onClick={test}
+          disabled={busy || !value.trim()}
+          className="rounded-md border border-zinc-600 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
+        >
+          {busy ? "Checking…" : "Test"}
+        </button>
+        <button
+          onClick={save}
+          disabled={busy || !value.trim() || (!dirty && value === jellyfin?.baseUrl)}
+          className="rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 px-4 py-2 text-sm font-medium"
+        >
+          Save
+        </button>
+      </div>
+      {status && (
+        <p
+          className={`text-xs ${status.ok ? "text-emerald-400" : "text-red-400"}`}
+        >
+          {status.ok ? "✓" : "✗"} {status.text}
+        </p>
+      )}
     </Section>
   );
 }
@@ -848,4 +947,79 @@ function BackupSection({ onChanged }: { onChanged: () => void }) {
       )}
     </Section>
   );
+}
+
+function SessionsSection() {
+  const queryClient = useQueryClient();
+  const { data: sessions = [], isLoading } = useQuery({
+    queryKey: ["sessions"],
+    queryFn: api.sessions,
+  });
+
+  const revoke = async (id: string, current: boolean) => {
+    const question = current
+      ? "Sign out of this browser?"
+      : "Revoke this session? That browser will be signed out immediately.";
+    if (!confirm(question)) return;
+    await api.revokeSession(id);
+    void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    if (current) {
+      void queryClient.invalidateQueries({ queryKey: ["auth"] });
+    }
+  };
+
+  return (
+    <Section
+      title="Sessions"
+      subtitle="Browsers currently signed in with your account. Revoking a session signs that browser out immediately."
+    >
+      <div className="space-y-2">
+        {sessions.map((s) => (
+          <div
+            key={s.id}
+            className="rounded-lg border border-zinc-800 bg-zinc-900/50 px-4 py-3 flex items-center gap-4"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-sm truncate">
+                  {s.userAgent ?? "Unknown browser"}
+                </span>
+                {s.current && (
+                  <span className="shrink-0 rounded bg-emerald-950 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-400">
+                    This browser
+                  </span>
+                )}
+              </div>
+              <div className="text-xs text-zinc-500">
+                Started {formatWhen(s.createdAt)} · Last seen{" "}
+                {formatWhen(s.lastSeenAt)}
+                {s.ip ? ` · ${s.ip}` : ""}
+              </div>
+            </div>
+            <button
+              onClick={() => void revoke(s.id, !!s.current)}
+              className="shrink-0 rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+            >
+              {s.current ? "Sign out" : "Revoke"}
+            </button>
+          </div>
+        ))}
+        {!isLoading && sessions.length === 0 && (
+          <p className="text-sm text-zinc-500">No active sessions.</p>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+function formatWhen(iso: string): string {
+  const date = new Date(iso);
+  const minutes = Math.round((Date.now() - date.getTime()) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days} d ago`;
+  return date.toLocaleDateString();
 }

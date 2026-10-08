@@ -108,6 +108,15 @@ Source of truth: `src/NzbDrone.Core/MediaFiles/**/Manual/ManualImportCommand.cs`
 - Jellyfin admins auto-grant Droparr admin (overridable); everyone else is a submitter pending approval.
 - Optional Jellyfin API key (admin-generated) for avatars and `POST /Library/Refresh` after imports.
 
+### Session model (M2.1)
+
+- Every request carries Jellyfin's client-info header (`MediaBrowser Client="Droparr", Device=…, DeviceId=…`). The transient `AccessToken` from a successful login is revoked via `POST /Sessions/Logout` immediately and never stored.
+- Sessions live server-side in SQLite: the `droparr_session` cookie holds a 256-bit random token, only its SHA-256 hash is persisted. Flags: `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` only on HTTPS (`secure: "auto"`) — the same code path works on LAN http and behind the Tunnel (M2.4).
+- Sliding 30-day expiry, touched at most hourly; expired sessions and sessions belonging to blocked users are dropped when used.
+- Login protection: 20 requests / 15 min per IP (`@fastify/rate-limit`) plus a per-username lockout after 5 failed credentials for 15 min (SQLite, survives restarts). Only Jellyfin 401/403 count as failures; outages return 502 without counting. Unknown users and wrong passwords get the same generic 401.
+- All `/api/*` routes require a session; non-auth routes are admin-only until M3 adds submitter routes. `/api/ws` closes unauthenticated upgrades with 4401, and revoking a session notifies + closes that browser's socket.
+- Bootstrap: while no Jellyfin URL is configured, `/api/auth/jellyfin` (and `/test`) are open so a fresh install can point at Jellyfin — M2.2 replaces this with the locked wizard. Settings → Jellyfin tests a URL via `GET /System/Info/Public` and lets admins change it.
+
 ## Cloudflare Tunnel constraints (engineering requirements)
 
 | Constraint | Mitigation |

@@ -13,6 +13,42 @@ export const submissionStateSchema = z.enum([
 ]);
 export const userRoleSchema = z.enum(["admin", "submitter"]);
 
+export const userSchema = z.object({
+  id: z.string().min(1),
+  jellyfinUserId: z.string().min(1),
+  name: z.string(),
+  role: userRoleSchema,
+  trusted: z.boolean(),
+  blocked: z.boolean(),
+  createdAt: z.string().datetime(),
+  lastLoginAt: z.string().datetime().optional(),
+});
+
+export const authSessionSchema = z.object({
+  id: z.string().min(1),
+  createdAt: z.string().datetime(),
+  lastSeenAt: z.string().datetime(),
+  expiresAt: z.string().datetime(),
+  userAgent: z.string().optional(),
+  ip: z.string().optional(),
+  current: z.boolean().optional(),
+});
+
+export const authStatusSchema = z.object({
+  setupRequired: z.boolean(),
+  authenticated: z.boolean(),
+  user: userSchema.optional(),
+});
+
+/** Jellyfin base URL — http(s) only; used by config, bootstrap and settings. */
+export const jellyfinBaseUrlSchema = z
+  .string()
+  .url()
+  .max(2048)
+  .refine((value) => /^https?:\/\//i.test(value), {
+    message: "Jellyfin URL must start with http:// or https://",
+  });
+
 export const pathMappingSchema = z.object({
   app: z.string().min(1),
   remote: z.string().min(1),
@@ -45,7 +81,7 @@ export const droparrConfigSchema = z.object({
   stagingDir: z.string(),
   jellyfin: z
     .object({
-      baseUrl: z.string().url(),
+      baseUrl: jellyfinBaseUrlSchema,
       apiKey: z.string().optional(),
     })
     .optional(),

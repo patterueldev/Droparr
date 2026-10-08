@@ -1,13 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import { stat } from "node:fs/promises";
 import { z } from "zod";
+import { JellyfinClient } from "@droparr/core";
+import { jellyfinBaseUrlSchema } from "@droparr/shared";
 import type { ConfigStore } from "../config/store.js";
 import { buildExport, validateImport } from "../config/import.js";
 
 const settingsSchema = z.object({
   stagingDir: z.string().optional(),
   jellyfin: z
-    .object({ baseUrl: z.string().url(), apiKey: z.string().optional() })
+    .object({ baseUrl: jellyfinBaseUrlSchema, apiKey: z.string().optional() })
     .optional(),
   llm: z
     .object({ provider: z.string(), apiKey: z.string(), model: z.string() })
@@ -23,6 +25,27 @@ export function settingsRoutes(app: FastifyInstance, config: ConfigStore): void 
       return reply.code(400).send({ error: parsed.error.flatten() });
     }
     return config.updateSettings(parsed.data);
+  });
+
+  /** Connection feedback for the Settings → Jellyfin section (admin only). */
+  app.post("/api/settings/jellyfin/test", async (req, reply) => {
+    const parsed = z
+      .object({ baseUrl: jellyfinBaseUrlSchema })
+      .safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      const info = await new JellyfinClient({
+        baseUrl: parsed.data.baseUrl,
+      }).publicSystemInfo();
+      return { ok: true, ...info };
+    } catch (err) {
+      return reply.code(502).send({
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   });
 
   /**

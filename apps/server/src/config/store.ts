@@ -143,7 +143,16 @@ export class ConfigStore {
     jellyfin?: DroparrConfig["jellyfin"];
     llm?: DroparrConfig["llm"];
   }): Promise<DroparrConfig> {
-    this.config = { ...this.config, ...patch };
+    const next = { ...this.config, ...patch };
+    // Merge nested objects so saving one field doesn't drop the others
+    // (e.g. saving the Jellyfin URL must keep its API key).
+    if (patch.jellyfin) {
+      next.jellyfin = { ...this.config.jellyfin, ...patch.jellyfin };
+    }
+    if (patch.llm) {
+      next.llm = { ...this.config.llm, ...patch.llm };
+    }
+    this.config = next;
     await this.save();
     return this.config;
   }

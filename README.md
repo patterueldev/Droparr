@@ -63,6 +63,11 @@ docker compose up -d --build
 The server serves the built UI and the API on a single port (`3100`). Configure
 instances, categories and the staging directory in **Settings** on first run.
 
+First login: open the UI — Droparr asks for your Jellyfin URL first (wizard
+lands in M2.2), then sign in with your Jellyfin account. Jellyfin admins become
+Droparr admins; other accounts can sign in and manage their own sessions, while
+submitter features arrive in M3. Droparr never stores Jellyfin passwords.
+
 > Multi-arch note: images build on both `linux/arm64` (dev Mac) and
 > `linux/amd64` (home server). Use `docker buildx build --platform linux/amd64,linux/arm64`.
 
