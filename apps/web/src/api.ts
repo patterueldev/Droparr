@@ -6,6 +6,7 @@ import type {
   FolderAnalysis,
   HistoryEntry,
   Instance,
+  StagingCheckIssue,
   UploadEvent,
   UploadListResponse,
   User,
@@ -81,6 +82,9 @@ export const api = {
   settings: () => request<DroparrConfig>("/api/settings"),
   updateSettings: (body: Partial<DroparrConfig>) =>
     request<DroparrConfig>("/api/settings", { method: "PUT", body }),
+  /** Advisory staging-visibility audit for the Settings page. */
+  settingsStagingCheck: () =>
+    request<StagingCheckResponse>("/api/settings/staging-check"),
   exportSettings: () =>
     request<{
       app: "droparr";
@@ -151,6 +155,11 @@ export const api = {
     }>("/api/analyze", { method: "POST", body: { path } }),
 
   // Import
+  /** Advisory check: can the category's instance see the drop once staged? */
+  importCheck: (categoryId: string, sourcePath: string) =>
+    request<StagingCheckResponse>(
+      `/api/import/check?categoryId=${encodeURIComponent(categoryId)}&sourcePath=${encodeURIComponent(sourcePath)}`,
+    ),
   startImport: (body: {
     sourcePath: string;
     categoryId: string;
@@ -178,6 +187,14 @@ export const api = {
   // History
   history: () => request<HistoryEntry[]>("/api/history"),
 };
+
+export interface StagingCheckResponse {
+  /** Configured staging dir (Settings) or planned drop dir (wizard). */
+  stagingDir: string;
+  /** Planned drop dir as the target instance sees it (wizard only). */
+  instanceDir?: string;
+  issues: StagingCheckIssue[];
+}
 
 export interface JobEvent {
   type: "job";

@@ -5,6 +5,7 @@ import { JellyfinClient } from "@droparr/core";
 import { jellyfinBaseUrlSchema, uploadSettingsSchema } from "@droparr/shared";
 import type { ConfigStore } from "../config/store.js";
 import { buildExport, validateImport } from "../config/import.js";
+import { auditSettingsStaging } from "../staging/check.js";
 import { resolveUploadSettings } from "../uploads/settings.js";
 
 const settingsSchema = z.object({
@@ -61,6 +62,14 @@ export function settingsRoutes(
       });
     }
   });
+
+  /**
+   * Advisory staging-visibility audit for Settings: can every instance used by
+   * a category see the staging dir, and does it exist on this machine?
+   */
+  app.get("/api/settings/staging-check", async () =>
+    auditSettingsStaging(config.get()),
+  );
 
   /**
    * Export the full configuration as a versioned JSON file.

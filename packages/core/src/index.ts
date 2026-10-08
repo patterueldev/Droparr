@@ -8,3 +8,4 @@ export * from "./jellyfin/client.js";
 export * from "./jellyfin/types.js";
 export * from "./staging/paths.js";
 export * from "./staging/planner.js";
+export * from "./staging/visibility.js";
