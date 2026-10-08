@@ -4,6 +4,8 @@ export * from "./arr/client.js";
 export * from "./arr/sonarr.js";
 export * from "./arr/radarr.js";
 export * from "./arr/types.js";
+export * from "./jellyfin/client.js";
+export * from "./jellyfin/types.js";
 export * from "./staging/paths.js";
 export * from "./staging/planner.js";
 export * from "./routing/pickCategory.js";

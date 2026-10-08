@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { pickDefaultCategory } from "@droparr/core";
-import type { Category, FolderAnalysis, Instance } from "@droparr/shared";
+import type {
+  Category,
+  FolderAnalysis,
+  Instance,
+  UploadSettings,
+} from "@droparr/shared";
 import { api, connectJobEvents, formatBytes, type JobEvent } from "../api";
+import UploadPanel from "./UploadPanel";
 
 type Step = "pick" | "review" | "running" | "done";
 
@@ -165,6 +171,7 @@ export default function ImportView({
         <PickStep
           busy={busy}
           stagingDir={settings?.stagingDir ?? ""}
+          uploadSettings={settings?.uploads}
           onAnalyze={handleAnalyze}
           onOpenSettings={onOpenSettings}
         />
@@ -242,28 +249,39 @@ function EmptyState({
 function PickStep({
   busy,
   stagingDir,
+  uploadSettings,
   onAnalyze,
   onOpenSettings,
 }: {
   busy: boolean;
   stagingDir: string;
+  uploadSettings?: UploadSettings;
   onAnalyze: (path: string) => void;
   onOpenSettings: () => void;
 }) {
-  const [path, setPath] = useState("");
-  const { data: listing } = useQuery({
-    queryKey: ["fs", path],
-    queryFn: () => api.listDirs(path || undefined),
-  });
+  const [mode, setMode] = useState<"path" | "upload">("path");
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6 space-y-4">
-      <div>
-        <h2 className="text-lg font-medium">Add a drop</h2>
-        <p className="text-sm text-zinc-400 mt-1">
-          Point at a folder on this server — a movie folder, a season, or a
-          whole series.
-        </p>
+    <div className="space-y-4">
+      <div className="flex gap-1 rounded-lg border border-zinc-800 bg-zinc-900/50 p-1 w-fit">
+        {(
+          [
+            ["path", "Server path"],
+            ["upload", "Upload from device"],
+          ] as [typeof mode, string][]
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setMode(id)}
+            className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
+              mode === id
+                ? "bg-zinc-800 text-white"
+                : "text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
       {!stagingDir && (
@@ -280,6 +298,38 @@ function PickStep({
           </button>
         </div>
       )}
+
+      {mode === "path" ? (
+        <PathPicker busy={busy} onAnalyze={onAnalyze} />
+      ) : (
+        <UploadPanel uploadSettings={uploadSettings} onAnalyze={onAnalyze} />
+      )}
+    </div>
+  );
+}
+
+function PathPicker({
+  busy,
+  onAnalyze,
+}: {
+  busy: boolean;
+  onAnalyze: (path: string) => void;
+}) {
+  const [path, setPath] = useState("");
+  const { data: listing } = useQuery({
+    queryKey: ["fs", path],
+    queryFn: () => api.listDirs(path || undefined),
+  });
+
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6 space-y-4">
+      <div>
+        <h2 className="text-lg font-medium">Add a drop</h2>
+        <p className="text-sm text-zinc-400 mt-1">
+          Point at a folder on this server — a movie folder, a season, or a
+          whole series.
+        </p>
+      </div>
 
       <div className="flex gap-2">
         <input

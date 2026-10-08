@@ -1,9 +1,14 @@
 import type {
+  AuthSession,
+  AuthStatus,
   Category,
   DroparrConfig,
   FolderAnalysis,
   HistoryEntry,
   Instance,
+  UploadEvent,
+  UploadListResponse,
+  User,
 } from "@droparr/shared";
 
 async function request<T>(
@@ -21,6 +26,10 @@ async function request<T>(
     headers,
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
+  if (res.status === 401 && path !== "/api/auth/login") {
+    // The session is gone (expired or revoked) — let the auth gate react.
+    window.dispatchEvent(new Event("droparr:unauthorized"));
+  }
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
     try {
@@ -42,6 +51,32 @@ async function request<T>(
 }
 
 export const api = {
+  // Auth
+  authStatus: () => request<AuthStatus>("/api/auth/status"),
+  login: (body: { username: string; password: string }) =>
+    request<{ user: User }>("/api/auth/login", { method: "POST", body }),
+  logout: () => request<void>("/api/auth/logout", { method: "POST" }),
+  sessions: () => request<AuthSession[]>("/api/auth/sessions"),
+  revokeSession: (id: string) =>
+    request<void>(`/api/auth/sessions/${id}`, { method: "DELETE" }),
+  /** Bootstrap while no Jellyfin URL is configured yet. */
+  jellyfinTest: (baseUrl: string) =>
+    request<{ ok: boolean; serverName?: string; version?: string }>(
+      "/api/auth/jellyfin/test",
+      { method: "POST", body: { baseUrl } },
+    ),
+  jellyfinSetup: (baseUrl: string) =>
+    request<{ ok: boolean; serverName?: string; version?: string }>(
+      "/api/auth/jellyfin",
+      { method: "POST", body: { baseUrl } },
+    ),
+  /** Connection test for the Settings → Jellyfin section (admin). */
+  jellyfinTestSaved: (baseUrl: string) =>
+    request<{ ok: boolean; serverName?: string; version?: string }>(
+      "/api/settings/jellyfin/test",
+      { method: "POST", body: { baseUrl } },
+    ),
+
   // Config
   settings: () => request<DroparrConfig>("/api/settings"),
   updateSettings: (body: Partial<DroparrConfig>) =>
@@ -134,11 +169,18 @@ export const api = {
       `/api/jobs/${id}`,
     ),
 
+  // Uploads
+  uploads: (dropId: string) =>
+    request<UploadListResponse>(
+      `/api/uploads?dropId=${encodeURIComponent(dropId)}`,
+    ),
+
   // History
   history: () => request<HistoryEntry[]>("/api/history"),
 };
 
 export interface JobEvent {
+  type: "job";
   jobId: string;
   phase:
     | "queued"
@@ -165,17 +207,90 @@ export interface JobEvent {
   };
 }
 
-export function connectJobEvents(onEvent: (e: JobEvent) => void): () => void {
+type JobListener = (e: JobEvent) => void;
+type UploadListener = (e: UploadEvent) => void;
+type RevokedListener = () => void;
+
+// One shared WebSocket for all consumers (live job progress, upload progress
+// and session revocation notices). Frames are routed by `type`; job frames
+// without a `type` are legacy job events.
+const jobListeners = new Set<JobListener>();
+const uploadListeners = new Set<UploadListener>();
+const revokedListeners = new Set<RevokedListener>();
+let socket: WebSocket | null = null;
+
+function ensureSocket(): void {
+  if (
+    socket &&
+    (socket.readyState === WebSocket.OPEN ||
+      socket.readyState === WebSocket.CONNECTING)
+  ) {
+    return;
+  }
+  if (
+    jobListeners.size === 0 &&
+    uploadListeners.size === 0 &&
+    revokedListeners.size === 0
+  ) {
+    return;
+  }
+
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(`${proto}//${location.host}/api/ws`);
+  socket = ws;
   ws.onmessage = (msg) => {
+    let parsed: unknown;
     try {
-      onEvent(JSON.parse(msg.data as string) as JobEvent);
+      parsed = JSON.parse(msg.data as string);
     } catch {
-      // ignore malformed frames
+      return; // ignore malformed frames
     }
+    const type =
+      typeof parsed === "object" && parsed !== null
+        ? (parsed as { type?: string }).type
+        : undefined;
+    if (type === "session-revoked") {
+      for (const listener of [...revokedListeners]) listener();
+      return;
+    }
+    if (type === "upload") {
+      for (const listener of [...uploadListeners]) {
+        listener(parsed as UploadEvent);
+      }
+      return;
+    }
+    for (const listener of [...jobListeners]) listener(parsed as JobEvent);
   };
-  return () => ws.close();
+  ws.onclose = () => {
+    if (socket === ws) socket = null;
+  };
+}
+
+/** Subscribe to live job progress. Returns an unsubscribe function. */
+export function connectJobEvents(onEvent: JobListener): () => void {
+  jobListeners.add(onEvent);
+  ensureSocket();
+  return () => {
+    jobListeners.delete(onEvent);
+  };
+}
+
+/** Subscribe to live upload progress. Returns an unsubscribe function. */
+export function connectUploadEvents(onEvent: UploadListener): () => void {
+  uploadListeners.add(onEvent);
+  ensureSocket();
+  return () => {
+    uploadListeners.delete(onEvent);
+  };
+}
+
+/** Notified when the server revokes the session behind this browser. */
+export function connectSessionRevoked(onRevoked: RevokedListener): () => void {
+  revokedListeners.add(onRevoked);
+  ensureSocket();
+  return () => {
+    revokedListeners.delete(onRevoked);
+  };
 }
 
 export function formatBytes(bytes: number): string {

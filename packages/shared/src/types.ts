@@ -13,6 +13,36 @@ export type SubmissionState =
 
 export type UserRole = "admin" | "submitter";
 
+export interface User {
+  id: string;
+  jellyfinUserId: string;
+  name: string;
+  role: UserRole;
+  trusted: boolean;
+  blocked: boolean;
+  createdAt: string;
+  lastLoginAt?: string;
+}
+
+/** A server-side login session as shown to its owner. */
+export interface AuthSession {
+  id: string;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string;
+  userAgent?: string;
+  ip?: string;
+  /** True for the session making the request. */
+  current?: boolean;
+}
+
+export interface AuthStatus {
+  /** True until a Jellyfin server URL has been configured (first run). */
+  setupRequired: boolean;
+  authenticated: boolean;
+  user?: User;
+}
+
 export interface PathMapping {
   app: string;
   remote: string;
@@ -38,10 +68,20 @@ export interface Category {
   seriesType: SeriesType;
 }
 
+export interface UploadSettings {
+  /** Where browser uploads land before staging. Defaults to <dataDir>/quarantine. */
+  quarantineDir?: string;
+  /** Per-file cap in bytes; 0 = unlimited. */
+  maxFileSizeBytes?: number;
+  /** Per-drop (submission) cap in bytes; 0 = unlimited. */
+  maxSubmissionSizeBytes?: number;
+}
+
 export interface DroparrConfig {
   instances: Instance[];
   categories: Category[];
   stagingDir: string;
+  uploads?: UploadSettings;
   jellyfin?: {
     baseUrl: string;
     apiKey?: string;

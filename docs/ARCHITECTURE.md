@@ -78,6 +78,38 @@ HistoryEntry { id, instanceId, kind, title, year, matchedId, files, result, time
    - poll `GET /api/v3/command/{id}` (pushed to the UI over WebSocket)
 7. **Verify & finish** — episode/movie file counts, links to the \*arr UI, optional Jellyfin `POST /Library/Refresh`, history entry, staging cleanup.
 
+## Uploads (TUS subset, M3.1)
+
+Browser drops upload in 32 MiB PATCH chunks — never single-request uploads —
+so multi-GB files pass through the Cloudflare Tunnel's 100 MB body limit.
+The client is `tus-js-client`; the server implements the subset it needs
+(creation + termination extensions; no concatenation, checksums, or deferred
+lengths).
+
+| Call | Purpose |
+| --- | --- |
+| `OPTIONS /api/uploads` | capabilities: `Tus-Version`, `Tus-Extension: creation,termination`, `Tus-Max-Size` (per-file cap) |
+| `POST /api/uploads` | create with `Upload-Length` + `Upload-Metadata` (`filename`, `filetype`, `relpath`, `dropid`) → `201` + `Location` |
+| `HEAD /api/uploads/:id` | resume probe → `Upload-Offset` / `Upload-Length`, `Cache-Control: no-store` |
+| `PATCH /api/uploads/:id` | append a chunk at `Upload-Offset` (`application/offset+octet-stream`) → `204` + new offset; `409` on offset mismatch, `423` while another write holds the upload, `413` over the chunk/size caps |
+| `DELETE /api/uploads/:id` | cancel + remove the partial file |
+| `GET /api/uploads?dropId=…` | Droparr extension: files of a drop + `completePath` once every file is done |
+
+Upload state (offset, filename, size, drop id) lives in SQLite; chunks are
+written straight to `<quarantineDir>/<dropId>/<relPath>` and fsynced **before**
+the offset is committed, so a crash never commits bytes that are not on disk.
+A killed browser resumes at the stored offset: tus-js-client fingerprints
+files (name/size/mtime) in localStorage, and re-adding the same files HEADs
+the server before continuing. Progress events ride the existing `/api/ws`
+channel (`type: "upload"`; job events are tagged `type: "job"`).
+
+Allowlist: video + subtitle extensions shared with the analyzer
+(`packages/shared/src/media.ts`); per-file and per-drop caps default to
+64 GiB / 256 GiB (`config.uploads`, `0` = unlimited). The quarantine directory
+defaults to `<dataDir>/quarantine`; when `DROPARR_BROWSE_ROOTS` is set it is
+added to the allowed browse roots automatically so `/api/analyze` can read
+completed drops.
+
 ## Verified \*arr API surface
 
 ### Sonarr v4+ (`X-Api-Key` header, base `/api/v3`)
@@ -107,6 +139,15 @@ Source of truth: `src/NzbDrone.Core/MediaFiles/**/Manual/ManualImportCommand.cs`
 - First-run setup wizard requires a Jellyfin admin login → that account becomes the Droparr admin; the wizard locks afterwards.
 - Jellyfin admins auto-grant Droparr admin (overridable); everyone else is a submitter pending approval.
 - Optional Jellyfin API key (admin-generated) for avatars and `POST /Library/Refresh` after imports.
+
+### Session model (M2.1)
+
+- Every request carries Jellyfin's client-info header (`MediaBrowser Client="Droparr", Device=…, DeviceId=…`). The transient `AccessToken` from a successful login is revoked via `POST /Sessions/Logout` immediately and never stored.
+- Sessions live server-side in SQLite: the `droparr_session` cookie holds a 256-bit random token, only its SHA-256 hash is persisted. Flags: `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` only on HTTPS (`secure: "auto"`) — the same code path works on LAN http and behind the Tunnel (M2.4).
+- Sliding 30-day expiry, touched at most hourly; expired sessions and sessions belonging to blocked users are dropped when used.
+- Login protection: 20 requests / 15 min per IP (`@fastify/rate-limit`) plus a per-username lockout after 5 failed credentials for 15 min (SQLite, survives restarts). Only Jellyfin 401/403 count as failures; outages return 502 without counting. Unknown users and wrong passwords get the same generic 401.
+- All `/api/*` routes require a session; non-auth routes are admin-only until M3 adds submitter routes. `/api/ws` closes unauthenticated upgrades with 4401, and revoking a session notifies + closes that browser's socket.
+- Bootstrap: while no Jellyfin URL is configured, `/api/auth/jellyfin` (and `/test`) are open so a fresh install can point at Jellyfin — M2.2 replaces this with the locked wizard. Settings → Jellyfin tests a URL via `GET /System/Info/Public` and lets admins change it.
 
 ## Cloudflare Tunnel constraints (engineering requirements)
 

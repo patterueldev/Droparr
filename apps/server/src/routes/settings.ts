@@ -1,28 +1,65 @@
 import type { FastifyInstance } from "fastify";
 import { stat } from "node:fs/promises";
 import { z } from "zod";
+import { JellyfinClient } from "@droparr/core";
+import { jellyfinBaseUrlSchema, uploadSettingsSchema } from "@droparr/shared";
 import type { ConfigStore } from "../config/store.js";
 import { buildExport, validateImport } from "../config/import.js";
+import { resolveUploadSettings } from "../uploads/settings.js";
 
 const settingsSchema = z.object({
   stagingDir: z.string().optional(),
+  uploads: uploadSettingsSchema.optional(),
   jellyfin: z
-    .object({ baseUrl: z.string().url(), apiKey: z.string().optional() })
+    .object({ baseUrl: jellyfinBaseUrlSchema, apiKey: z.string().optional() })
     .optional(),
   llm: z
     .object({ provider: z.string(), apiKey: z.string(), model: z.string() })
     .optional(),
 });
 
-export function settingsRoutes(app: FastifyInstance, config: ConfigStore): void {
-  app.get("/api/settings", async () => config.get());
+export function settingsRoutes(
+  app: FastifyInstance,
+  config: ConfigStore,
+  dataDir: string,
+): void {
+  // Return the upload policy with defaults resolved so the client can
+  // pre-flight file sizes and show the quarantine location.
+  const withResolvedUploads = () => ({
+    ...config.get(),
+    uploads: resolveUploadSettings(config.get(), dataDir),
+  });
+
+  app.get("/api/settings", async () => withResolvedUploads());
 
   app.put("/api/settings", async (req, reply) => {
     const parsed = settingsSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: parsed.error.flatten() });
     }
-    return config.updateSettings(parsed.data);
+    await config.updateSettings(parsed.data);
+    return withResolvedUploads();
+  });
+
+  /** Connection feedback for the Settings → Jellyfin section (admin only). */
+  app.post("/api/settings/jellyfin/test", async (req, reply) => {
+    const parsed = z
+      .object({ baseUrl: jellyfinBaseUrlSchema })
+      .safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      const info = await new JellyfinClient({
+        baseUrl: parsed.data.baseUrl,
+      }).publicSystemInfo();
+      return { ok: true, ...info };
+    } catch (err) {
+      return reply.code(502).send({
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   });
 
   /**
