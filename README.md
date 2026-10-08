@@ -1,0 +1,52 @@
+# Droparr
+
+**Drop a folder. It's in your \*arr.**
+
+Droparr is a self-hosted web app that takes an existing movie or series folder — messy names, mixed seasons, whatever — and handles the tedious part of getting it into Sonarr and Radarr:
+
+- detects series vs movie, and routes anime vs standard drops to the right instance
+- matches against TVDB/TMDB through your \*arr instances' own lookup APIs (no extra API keys)
+- gives you a review screen to fix the match, pick seasons and monitoring
+- stages files and lets Sonarr/Radarr do a native **manual import** — renaming, quality detection and moving stay inside the \*arr, exactly like the built-in UI
+
+Optional extras: LLM-assisted matching for ugly filenames (off by default), and Jellyfin login with an admin approval queue for submissions from family and friends.
+
+> **Status:** early development — plan and architecture are locked; implementation starts at milestone M1. See [`docs/PLAN.md`](docs/PLAN.md).
+
+## Why not the built-in Library Import?
+
+Sonarr and Radarr both ship a "Library Import" feature, but it is per-instance only, expects cleanly organized files inside a root folder, and cannot decide *which* of your instances (anime Sonarr? TV Sonarr? Radarr?) a drop belongs to. Droparr is the orchestration layer above that machinery. See [Prior art](docs/PLAN.md#prior-art-and-why-were-building-this).
+
+## How it works
+
+1. **Add** — drop folders (browser, chunked/resumable) or point at a server path / watch folder
+2. **Analyze** — heuristics parse names (`S01E01`, absolute anime numbering, year), then query your \*arr lookups for matches
+3. **Review** — fix the match, choose a category, seasons and monitoring; duplicates are handled ("import only" mode)
+4. **Import** — files are staged, the title is added to Sonarr/Radarr, and a native manual import runs with live progress
+5. **Play** — optional Jellyfin library refresh once it's done
+
+## Roles
+
+- **Admin** — full configuration, approval queue, instant imports
+- **Submitter** — signs in with their Jellyfin account, drops files, tracks status; submissions wait in an approval queue (per-user "trusted" toggle available)
+
+## Documentation
+
+- [Product plan](docs/PLAN.md) — problem, scope, milestones, decision log
+- [Architecture](docs/ARCHITECTURE.md) — stack, pipeline, verified \*arr/Jellyfin API mechanics, Cloudflare Tunnel constraints
+
+## Development
+
+Planned stack: pnpm monorepo — React 19 + Vite (web), Node + Fastify (server), TypeScript throughout, PostgreSQL-free (SQLite + JSON config), Docker for deployment.
+
+Prerequisites: Node ≥ 22, pnpm ≥ 10.
+
+```bash
+# coming with M1
+pnpm install
+pnpm dev
+```
+
+## License
+
+[MIT](LICENSE)

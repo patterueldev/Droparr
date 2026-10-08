@@ -1,0 +1,150 @@
+# Droparr — Architecture
+
+> Captured 2026-10-08. Verified against the Sonarr/Radarr `develop` OpenAPI specs and source, the Jellyfin stable OpenAPI spec, and Cloudflare documentation.
+
+## Overview
+
+```
+┌────────────┐   HTTPS (Cloudflare Tunnel)   ┌──────────────────────────────┐
+│  Browser   │ ────────────────────────────► │  Droparr (Docker)            │
+│ admin /    │ ◄──── WebSocket progress ──── │  Fastify API + React SPA     │
+│ submitter  │                               │  SQLite + JSON config        │
+└────────────┘                               └───────┬──────────┬───────────┘
+                                                     │          │
+                             shared staging volume   │          │ /api/v3
+                                     ┌───────────────┘          │
+                                     ▼                          ▼
+                              Sonarr ×2 / Radarr ×2   (anime / TV / movies)
+```
+
+Design principle: **Droparr never re-implements renaming, quality detection, or file moves.** It stages files and asks the target \*arr to run a **manual import** — the same machinery the \*arr UIs use — with `importMode: move | copy`. All file paths exchanged with an instance go through **per-instance path mappings** (`appPath ↔ instancePath`), the number-one setup gotcha.
+
+## Tech stack
+
+- **Monorepo**: pnpm workspaces
+  - `apps/web` — React 19 + Vite + TypeScript + Tailwind + TanStack Query
+  - `apps/server` — Node 22+ + Fastify + TypeScript + zod
+  - `packages/core` — pure TypeScript: \*arr clients, analyzer/parser, staging planner (unit-tested)
+  - `packages/shared` — zod schemas + shared types
+- **Storage**: JSON config file (v1) + SQLite (sessions, submissions, history)
+- **Realtime**: WebSocket for upload/import progress (works reliably through Cloudflare Tunnel)
+- **Packaging**: single Docker image + `docker-compose.yml` example; runs alongside the \*arrs with a shared staging volume
+
+## Data model (v1)
+
+```ts
+Instance  { id, name, kind: "series" | "movie", baseUrl, apiKey,
+            pathMappings: { app: string; remote: string }[] }
+
+Category  { id, name, kind, instanceId, rootFolder, qualityProfileId?,
+            tags: string[], seriesType: "standard" | "anime" | "daily" }
+
+Submission { id, submitterId,
+             state: "uploading" | "analyzing" | "pending" | "approved"
+                  | "importing" | "done" | "rejected",
+             files: FileRef[], analysis: FolderAnalysis }
+
+User      { id, jellyfinUserId, name, role: "admin" | "submitter",
+            trusted: boolean, blocked: boolean }
+
+HistoryEntry { id, instanceId, kind, title, year, matchedId, files, result, timestamps }
+```
+
+## Import pipeline
+
+1. **Ingest** (one of):
+   - browser upload — chunked/resumable into the quarantine dir (M3, submitters)
+   - server-side path — analyzed in place or copied to staging (M1, admin)
+   - watch folder — server paths monitored for new drops (M4)
+2. **Analyze** — enumerate video files (skip samples/extras), parse names:
+   - `SxxExx`, `1x01`, season folders → series
+   - absolute numbering (`Show - 01`, `[Group] Show - 12 (1080p)`) → anime-style series (needs ≥ 2 files to be confident)
+   - year in folder/file → movie
+   - release-tag stripping (`1080p`, `x265`, `WEB-DL`, …) to clean titles
+3. **Match** — query the *target instance's own* lookup API:
+   - `GET /api/v3/series/lookup?term=…` (Sonarr / TVDB)
+   - `GET /api/v3/movie/lookup?term=…` (Radarr / TMDB)
+   - No TVDB/TMDB keys needed inside Droparr.
+   - Exact normalized title + year → high-confidence auto-match; otherwise the review UI shows candidates.
+   - Optional LLM: clean borderline names / rank candidates (pluggable, off by default)
+4. **Review** — match search, category, season selection, monitor mode, dedupe checks:
+   - title already in library → "import only" mode
+   - files already imported → warn / skip
+5. **Stage** — copy/move into the shared staging dir, mapped to the target instance's view. Uploads may use the quarantine dir directly as staging (no double copy) when the \*arr can read it.
+6. **Execute**:
+   - ensure the title exists: `POST /api/v3/series | /movie` with monitoring on and `searchForMissingEpisodes: false` / `searchForMovie: false`
+   - preflight: `GET /api/v3/manualimport?folder=…` — the \*arr parses staged files itself and returns matches, episode IDs, quality and **rejections** (surfaced in the UI)
+   - import: `POST /api/v3/command` `{ name: "ManualImport", files: […], importMode: "move" }`
+   - poll `GET /api/v3/command/{id}` (pushed to the UI over WebSocket)
+7. **Verify & finish** — episode/movie file counts, links to the \*arr UI, optional Jellyfin `POST /Library/Refresh`, history entry, staging cleanup.
+
+## Verified \*arr API surface
+
+### Sonarr v4+ (`X-Api-Key` header, base `/api/v3`)
+
+| Purpose | Call |
+| --- | --- |
+| connection test | `GET /system/status` |
+| dropdown data | `GET /rootfolder`, `GET /qualityprofile`, `GET /tag` |
+| matching | `GET /series/lookup?term=…` |
+| existing library | `GET /series` |
+| add series | `POST /series` — `SeriesResource`; `addOptions.monitor`, `addOptions.searchForMissingEpisodes: false`; `seriesType: standard \| anime \| daily` |
+| preflight | `GET /manualimport?folder=…&filterExistingFiles=false` |
+| import | `POST /command` — `{ name: "ManualImport", files: [{ path, seriesId, episodeIds, quality, languages, releaseGroup }], importMode: "move" \| "copy" }` |
+| fallbacks | `POST /command` — `{ name: "RescanSeries", seriesId }` or `{ name: "DownloadedEpisodesScan", path, downloadClientId, importMode }` |
+| library import | `POST /series/import` |
+
+### Radarr v5+
+
+Mirrors Sonarr with `movieId`, `addOptions.searchForMovie: false`, `RescanMovie`, `DownloadedMoviesScan`, `POST /movie/import`.
+
+Source of truth: `src/NzbDrone.Core/MediaFiles/**/Manual/ManualImportCommand.cs` and `ManualImportFile.cs`, `src/*.Api.V3/ManualImport/ManualImportController.cs` in both repositories, plus their generated OpenAPI specs (both currently report API version `3.0.0`).
+
+## Jellyfin authentication
+
+- Login: `POST {jellyfin}/Users/AuthenticateByName`, body `{ Username, Pw }` → `{ User, SessionInfo, AccessToken, ServerId }`; `User.Policy.IsAdministrator` is available.
+- Droparr extracts identity immediately, **never stores passwords**, and creates its own server-side session (secure, HttpOnly cookie).
+- First-run setup wizard requires a Jellyfin admin login → that account becomes the Droparr admin; the wizard locks afterwards.
+- Jellyfin admins auto-grant Droparr admin (overridable); everyone else is a submitter pending approval.
+- Optional Jellyfin API key (admin-generated) for avatars and `POST /Library/Refresh` after imports.
+
+## Cloudflare Tunnel constraints (engineering requirements)
+
+| Constraint | Mitigation |
+| --- | --- |
+| **100 MB max request body** on proxied traffic (Free/Pro; 200 MB Business; 500 MB Enterprise) — Tunnel traffic is proxied | chunked/resumable uploads, 32 MB chunks (TUS-style); never single-request uploads |
+| 100 s origin response timeout | chunk requests are short; imports are async commands + polling, not held requests |
+| TLS terminates at Cloudflare | Fastify `trustProxy`, `Secure` + `HttpOnly` + `SameSite` cookies; real client IP via `CF-Connecting-IP` |
+| Proxy buffering quirks | WebSocket for progress (supported through Tunnel); `Cache-Control: no-store` on API routes |
+| Error surface | Fastify body limit below 100 MB so our 4xx (not Cloudflare's 413) is returned |
+
+Noted alternative: a DNS-only record bypasses the limit but exposes the origin IP — not recommended.
+
+## Security model
+
+- Jellyfin login with rate limiting + lockout; sessions in SQLite; admin can revoke.
+- Non-admin submissions are quarantined until approved; nothing reaches the \*arrs before approval.
+- Upload allowlist (video + subtitle extensions), configurable size caps, free-space guards, rejected-upload cleanup (default 7 days).
+- Path-traversal guards on all filesystem endpoints; API keys stored server-side, env-overridable, never logged.
+- Optional Cloudflare Access in front of admin routes for extra hardening.
+
+## Edge cases to handle
+
+- multi-movie folders (fan out into N items)
+- anime: absolute numbering, S00 specials, OVAs, fansub junk
+- season packs and multi-season drops; multi-episode files
+- duplicates: title exists (import-only), file exists (skip), re-submission of the same files
+- samples, `.nfo` and subtitle sidecars, `.part` junk, macOS `._` AppleDouble files
+- permissions/ownership in Docker (PUID/PGID); hardlinks for seeding (later)
+- interrupted copies/uploads (resume); disk-full mid-copy
+- SMB mounts remounting at different paths (`/Volumes/media-1`) → clear remap UX
+
+## Milestone mapping
+
+| Milestone | Components |
+| --- | --- |
+| M1 | config store, \*arr clients, analyzer, review UI, staging + import, history |
+| M2 | Jellyfin auth, setup wizard, sessions, roles, Tunnel docs |
+| M3 | chunked uploads, quarantine, approval queue, notifications, cleanup |
+| M4 | LLM plugin, watch folder, Jellyfin refresh, anime polish |
+| M5 | guest links, OIDC, desktop wrapper, release polish |
