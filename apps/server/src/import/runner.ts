@@ -369,7 +369,7 @@ async function pollCommand(
   onTick: (c: { id: number; name: string; status: string; message?: string }) => void,
 ): Promise<{ status: string; message?: string }> {
   const deadline = Date.now() + 10 * 60 * 1000; // 10 min
-  let interval = 1500;
+  let interval = Number(process.env.DROPARR_POLL_INTERVAL_MS ?? 1500);
   for (;;) {
     if (Date.now() > deadline) {
       return { status: "failed", message: "Timed out waiting for the *arr command" };

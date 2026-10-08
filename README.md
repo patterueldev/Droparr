@@ -37,15 +37,34 @@ Sonarr and Radarr both ship a "Library Import" feature, but it is per-instance o
 
 ## Development
 
-Planned stack: pnpm monorepo — React 19 + Vite (web), Node + Fastify (server), TypeScript throughout, PostgreSQL-free (SQLite + JSON config), Docker for deployment.
+pnpm monorepo — React 19 + Vite (web), Node + Fastify (server), TypeScript throughout, SQLite + JSON config, Docker for deployment.
 
 Prerequisites: Node ≥ 22, pnpm ≥ 10.
 
 ```bash
-# coming with M1
 pnpm install
-pnpm dev
+pnpm dev          # API on :3100, web on :5173 (proxies /api)
 ```
+
+Other commands:
+
+```bash
+pnpm -r typecheck  # typecheck all packages
+pnpm -r test       # unit tests (analyzer, path mapping, staging)
+pnpm --filter @droparr/web build   # build the web UI
+```
+
+Deploy with Docker:
+
+```bash
+docker compose up -d --build
+```
+
+The server serves the built UI and the API on a single port (`3100`). Configure
+instances, categories and the staging directory in **Settings** on first run.
+
+> Multi-arch note: images build on both `linux/arm64` (dev Mac) and
+> `linux/amd64` (home server). Use `docker buildx build --platform linux/amd64,linux/arm64`.
 
 ## License
 

@@ -1,0 +1,24 @@
+# Droparr — example deployment next to the *arr stack.
+# Adjust volume paths to match your server layout, then: docker compose up -d --build
+services:
+  droparr:
+    build: .
+    container_name: droparr
+    ports:
+      - "3100:3100"
+    environment:
+      # Staging dir must be a path *both* Droparr and the *arrs can see
+      # (configure the same path in Settings → Staging directory).
+      - DROPARR_DATA=/data
+      - DROPARR_CONFIG=/config/config.json
+      # Restrict the server-side folder browser (colon-separated).
+      # - DROPARR_BROWSE_ROOTS=/incoming:/media
+    volumes:
+      # Droparr's own state (SQLite history).
+      - ./config:/config
+      # Shared staging volume — the *arrs must be able to read this too,
+      # and each instance needs a path mapping for it in Settings.
+      - ./staging:/data/staging
+      # Example: where your drops land on the server.
+      # - /mnt/media/incoming:/incoming
+    restart: unless-stopped

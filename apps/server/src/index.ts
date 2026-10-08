@@ -1,6 +1,8 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
+import fastifyStatic from "@fastify/static";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigStore } from "./config/store.js";
 import { Db } from "./db.js";
@@ -57,6 +59,22 @@ async function main(): Promise<void> {
   });
 
   app.get("/api/health", async () => ({ ok: true, version: "0.1.0" }));
+
+  // Serve the built web app when present (production/Docker).
+  // In dev, Vite serves the UI and proxies /api here.
+  const webDist =
+    process.env.DROPARR_WEB_DIST ??
+    join(process.cwd(), "..", "web", "dist");
+  if (existsSync(webDist)) {
+    await app.register(fastifyStatic, { root: webDist, wildcard: false });
+    app.setNotFoundHandler((req, reply) => {
+      if (req.url.startsWith("/api")) {
+        return reply.code(404).send({ error: "Not found" });
+      }
+      return reply.sendFile("index.html");
+    });
+    app.log.info(`Serving web UI from ${webDist}`);
+  }
 
   await app.listen({ port: PORT, host: HOST });
   app.log.info(`Droparr server listening on http://${HOST}:${PORT}`);
