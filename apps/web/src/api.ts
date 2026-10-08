@@ -4,6 +4,7 @@ import type {
   Category,
   DroparrConfig,
   FolderAnalysis,
+  FolderAnalysisItem,
   HistoryEntry,
   Instance,
   SetupStatus,
@@ -172,13 +173,7 @@ export const api = {
       dirs: { name: string; path: string }[];
     }>(`/api/fs/list${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   analyze: (path: string) =>
-    request<{
-      sourcePath: string;
-      dropName: string;
-      analysis: FolderAnalysis;
-      totalBytes: number;
-      skipped: string[];
-    }>("/api/analyze", { method: "POST", body: { path } }),
+    request<AnalyzeResponse>("/api/analyze", { method: "POST", body: { path } }),
 
   // Import
   /** Advisory check: can the category's instance see the drop once staged? */
@@ -186,19 +181,14 @@ export const api = {
     request<StagingCheckResponse>(
       `/api/import/check?categoryId=${encodeURIComponent(categoryId)}&sourcePath=${encodeURIComponent(sourcePath)}`,
     ),
-  startImport: (body: {
-    sourcePath: string;
-    categoryId: string;
-    match: {
-      tvdbId?: number;
-      tmdbId?: number;
-      title: string;
-      year?: number;
-      extra?: Record<string, unknown>;
-    };
-    seasons?: number[];
-    importMode: "move" | "copy";
-  }) => request<{ jobId: string }>("/api/import", { method: "POST", body }),
+  startImport: (body: ImportRequestBody) =>
+    request<{ jobId: string }>("/api/import", { method: "POST", body }),
+  /** Fan-out import: one pipeline (job) per item, run sequentially server-side. */
+  startImportBatch: (body: { items: ImportRequestBody[] }) =>
+    request<{ jobs: { jobId: string }[] }>("/api/import/batch", {
+      method: "POST",
+      body,
+    }),
   job: (id: string) =>
     request<{ id: string; events: JobEvent[]; finished: boolean }>(
       `/api/jobs/${id}`,
@@ -220,6 +210,40 @@ export interface StagingCheckResponse {
   /** Planned drop dir as the target instance sees it (wizard only). */
   instanceDir?: string;
   issues: StagingCheckIssue[];
+}
+
+export interface AnalyzeResponse {
+  sourcePath: string;
+  dropName: string;
+  /** Whole-drop analysis (the single-item heuristics). */
+  analysis: FolderAnalysis;
+  /**
+   * Reviewable items: one per movie when the drop fanned out, else a single
+   * item. Each carries the absolute path to import from.
+   */
+  items: (FolderAnalysisItem & { sourcePath: string })[];
+  totalBytes: number;
+  skipped: string[];
+}
+
+export interface ImportRequestBody {
+  sourcePath: string;
+  categoryId: string;
+  match: {
+    tvdbId?: number;
+    tmdbId?: number;
+    title: string;
+    year?: number;
+    extra?: Record<string, unknown>;
+  };
+  seasons?: number[];
+  importMode: "move" | "copy";
+  /**
+   * Optional subset of the drop's media files (relative to sourcePath) to
+   * stage and import. Fanned-out items pass this for files that sit loose at
+   * a shared drop root; whole-drop imports omit it.
+   */
+  files?: string[];
 }
 
 export interface JobEvent {
