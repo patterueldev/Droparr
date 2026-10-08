@@ -1,5 +1,5 @@
-import { cp, mkdir, stat } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { cp, mkdir, rm, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import {
   PathMapper,
@@ -141,10 +141,20 @@ export async function runImport(
 
     // --- Ensure the title exists in the library -------------------------
     emit("adding", `Ensuring "${req.match.title}" exists in ${instance.name}`);
+    // Optional deployment knob for slow *arr metadata backends (VPN, …).
+    const timeoutMs = Number(process.env.DROPARR_ARR_TIMEOUT_MS) || undefined;
     const client =
       instance.kind === "series"
-        ? new SonarrClient({ baseUrl: instance.baseUrl, apiKey: instance.apiKey })
-        : new RadarrClient({ baseUrl: instance.baseUrl, apiKey: instance.apiKey });
+        ? new SonarrClient({
+            baseUrl: instance.baseUrl,
+            apiKey: instance.apiKey,
+            timeoutMs,
+          })
+        : new RadarrClient({
+            baseUrl: instance.baseUrl,
+            apiKey: instance.apiKey,
+            timeoutMs,
+          });
 
     let matchedId: number;
     if (instance.kind === "series") {
@@ -175,6 +185,9 @@ export async function runImport(
         });
         matchedId = added.id;
         emit("adding", `Added series "${added.title}" to ${instance.name}`);
+        await waitForEpisodes(sonarr, added.id, seasons, (message) =>
+          emit("adding", message),
+        );
       }
     } else {
       const radarr = client as RadarrClient;
@@ -288,6 +301,35 @@ export async function runImport(
       throw new Error(final.message ?? `Import command ${final.status}`);
     }
 
+    // --- Staging cleanup ------------------------------------------------
+    // With importMode "move" the *arr has moved everything it accepted out
+    // of the staging drop; remove what is left (rejected files, empty dirs)
+    // so staging doesn't accumulate. The source drop is untouched — staging
+    // is always a copy. Cleanup problems never fail an otherwise good import.
+    if (req.importMode === "move") {
+      if (!isStrictlyInside(stagingBase, plan.stagingDir)) {
+        emit(
+          "cleanup",
+          `Skipped staging cleanup — "${plan.stagingDir}" is outside the staging root`,
+        );
+      } else {
+        try {
+          await rm(plan.stagingDir, { recursive: true, force: true });
+          emit(
+            "cleanup",
+            rejected.length > 0
+              ? `Cleaned staging folder (removed ${rejected.length} rejected file(s))`
+              : "Cleaned staging folder",
+          );
+        } catch (err) {
+          emit(
+            "cleanup",
+            `Staging cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
+
     emit("done", "Import complete", {
       result: {
         importedFiles: importable.length,
@@ -361,6 +403,46 @@ function buildSeasonSelection(
       seasonNumber,
       monitored: monitorSet.has(seasonNumber),
     }));
+}
+
+/** True when `child` is strictly inside `parent` (both resolved). */
+function isStrictlyInside(parent: string, child: string): boolean {
+  const rel = relative(resolve(parent), resolve(child));
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/**
+ * After adding a series the *arr refreshes episode metadata asynchronously;
+ * an immediate manual-import preflight can race that refresh and reject every
+ * file with "Invalid season or episode". Wait until episode rows exist for
+ * the seasons being imported (or a short timeout — preflight will surface
+ * the real problem either way).
+ */
+async function waitForEpisodes(
+  client: SonarrClient,
+  seriesId: number,
+  seasons: { seasonNumber: number; monitored: boolean }[],
+  onWait: (message: string) => void,
+): Promise<void> {
+  const wanted = new Set(
+    seasons.filter((s) => s.monitored).map((s) => s.seasonNumber),
+  );
+  const deadline = Date.now() + 30_000;
+  let announced = false;
+  for (;;) {
+    const episodes = await client.listEpisodes(seriesId).catch(() => []);
+    const relevant =
+      wanted.size > 0
+        ? episodes.filter((e) => wanted.has(e.seasonNumber))
+        : episodes;
+    if (relevant.length > 0) return;
+    if (Date.now() > deadline) return;
+    if (!announced) {
+      onWait("Waiting for the *arr to index episodes…");
+      announced = true;
+    }
+    await sleep(500);
+  }
 }
 
 async function pollCommand(

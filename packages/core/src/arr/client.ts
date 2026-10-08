@@ -3,7 +3,10 @@ import { ArrError, type ArrCommand, type SystemStatus } from "./types.js";
 export interface ArrClientOptions {
   baseUrl: string;
   apiKey: string;
-  /** Request timeout in ms. Default 15s. */
+  /**
+   * Request timeout in ms. Default 30s — metadata lookups (TVDB/TMDB) go
+   * through the *arr and can be slow, especially behind a VPN.
+   */
   timeoutMs?: number;
 }
 
@@ -21,7 +24,7 @@ export class ArrClient {
   constructor(opts: ArrClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
     this.apiKey = opts.apiKey;
-    this.timeoutMs = opts.timeoutMs ?? 15_000;
+    this.timeoutMs = opts.timeoutMs ?? 30_000;
   }
 
   protected buildUrl(path: string, query?: QueryParams): string {

@@ -7,5 +7,7 @@ dist
 data/
 .env
 .env.local
+e2e/m1/local.env
+e2e/m1/.work/
 .DS_Store
 *.log

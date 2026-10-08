@@ -1,0 +1,42 @@
+# Droparr deployment for the M1 validation bench (homeserver, next to the *arrs).
+#
+# The *arrs share a gluetun network namespace and are reachable from the
+# `mintfin` network as http://gluetun:<port>. Droparr joins that network and
+# publishes its UI on the LAN only.
+#
+# Values come from a .env file in this directory (see local.env.example);
+# paths are resolved relative to this directory as the compose project dir:
+#   cd e2e/m1 && docker compose -f server-compose.yaml up -d --build
+services:
+  droparr:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: droparr
+    # Match the *arr PUID/PGID so files staged by Droparr can be moved/deleted
+    # by the *arrs during manual import.
+    user: "1000:1000"
+    ports:
+      - "${LAN_IP}:3100:3100"
+    environment:
+      - DROPARR_DATA=/data
+      - DROPARR_CONFIG=/config/config.json
+      - DROPARR_BROWSE_ROOTS=/incoming
+      - TZ=Etc/UTC
+    volumes:
+      # Droparr's own state (SQLite history + JSON config).
+      - ${DATA_HOST_DIR}/config:/config
+      - ${DATA_HOST_DIR}/data:/data
+      # Shared staging: must be visible to the *arrs too (they see it as
+      # /media-03/.droparr/staging — configure the matching path mapping).
+      - ${STAGING_HOST_DIR}:/data/staging
+      # Where validation drops are placed on the server.
+      - ${DROPS_HOST_DIR}:/incoming
+    networks:
+      - default
+      - mintfin
+    restart: unless-stopped
+
+networks:
+  mintfin:
+    external: true

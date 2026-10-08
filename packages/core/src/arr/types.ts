@@ -62,6 +62,14 @@ export interface SonarrSeason {
   };
 }
 
+/** An episode as it exists in the Sonarr library. */
+export interface SonarrEpisode {
+  id: number;
+  seasonNumber: number;
+  episodeNumber: number;
+  monitored?: boolean;
+}
+
 /** Radarr movie lookup result. */
 export interface RadarrLookupResult {
   title: string;
