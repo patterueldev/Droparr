@@ -189,6 +189,7 @@ export default function ImportView({
           instances={instances}
           categories={categories}
           busy={busy}
+          onOpenSettings={onOpenSettings}
           onTitleChange={setTitle}
           onYearChange={setYear}
           onMatchChange={(m) => {
@@ -407,6 +408,7 @@ function ReviewStep({
   instances,
   categories,
   busy,
+  onOpenSettings,
   onTitleChange,
   onYearChange,
   onMatchChange,
@@ -426,6 +428,7 @@ function ReviewStep({
   instances: Instance[];
   categories: Category[];
   busy: boolean;
+  onOpenSettings: () => void;
   onTitleChange: (t: string) => void;
   onYearChange: (y?: number) => void;
   onMatchChange: (m: Record<string, unknown> | null) => void;
@@ -453,6 +456,13 @@ function ReviewStep({
   }, [categoryId, preferredCategory, onCategoryChange]);
 
   const instance = instances.find((i) => i.id === category?.instanceId);
+
+  // Advisory pre-import check: can the instance see the staged drop? Never blocks.
+  const { data: stagingCheck, isError: checkFailed } = useQuery({
+    queryKey: ["import-check", categoryId, drop.sourcePath],
+    queryFn: () => api.importCheck(categoryId, drop.sourcePath),
+    enabled: !!categoryId,
+  });
 
   const matchSeasons = useMemo(() => {
     const s = match?.seasons as { seasonNumber: number }[] | undefined;
@@ -545,6 +555,35 @@ function ReviewStep({
           </label>
         </div>
       </div>
+
+      {stagingCheck && stagingCheck.issues.length > 0 && (
+        <div className="rounded-lg border border-amber-900 bg-amber-950/40 px-4 py-3 space-y-2">
+          <div className="flex items-start justify-between gap-4">
+            <p className="text-sm font-medium text-amber-300">
+              Staging visibility check
+            </p>
+            <button
+              onClick={onOpenSettings}
+              className="shrink-0 rounded-md border border-amber-700 px-3 py-1.5 text-xs text-amber-300 hover:bg-amber-900/40"
+            >
+              Fix in settings
+            </button>
+          </div>
+          {stagingCheck.issues.map((issue, i) => (
+            <div key={`${issue.code}-${issue.instanceId ?? i}`} className="space-y-0.5">
+              <p className="text-sm text-amber-300">{issue.message}</p>
+              {issue.suggestion && (
+                <p className="text-xs text-amber-400/80">{issue.suggestion}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {checkFailed && (
+        <p className="text-xs text-zinc-500">
+          Could not check staging visibility.
+        </p>
+      )}
 
       <div className="flex items-center justify-between gap-4">
         <button

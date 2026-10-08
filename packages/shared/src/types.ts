@@ -93,6 +93,24 @@ export interface DroparrConfig {
   };
 }
 
+/**
+ * Early staging-visibility findings (Settings + import wizard). Advisory only:
+ * a listed problem explains why an import would fail, but never blocks it.
+ */
+export type StagingCheckIssueCode =
+  | "staging-dir-empty"
+  | "staging-dir-missing"
+  | "staging-dir-unmapped";
+
+export interface StagingCheckIssue {
+  code: StagingCheckIssueCode;
+  message: string;
+  suggestion?: string;
+  /** Set when the issue concerns one target instance's path mappings. */
+  instanceId?: string;
+  instanceName?: string;
+}
+
 export interface FileRef {
   name: string;
   path: string;
