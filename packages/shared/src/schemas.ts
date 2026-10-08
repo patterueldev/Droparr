@@ -38,11 +38,18 @@ export const categorySchema = z.object({
   seriesType: seriesTypeSchema,
 });
 
+export const uploadSettingsSchema = z.object({
+  quarantineDir: z.string().optional(),
+  maxFileSizeBytes: z.number().int().nonnegative().optional(),
+  maxSubmissionSizeBytes: z.number().int().nonnegative().optional(),
+});
+
 export const droparrConfigSchema = z.object({
   instances: z.array(instanceSchema),
   categories: z.array(categorySchema),
   // May be empty until the user configures it in Settings.
   stagingDir: z.string(),
+  uploads: uploadSettingsSchema.optional(),
   jellyfin: z
     .object({
       baseUrl: z.string().url(),
