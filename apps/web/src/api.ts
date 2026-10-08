@@ -4,6 +4,8 @@ import type {
   FolderAnalysis,
   HistoryEntry,
   Instance,
+  UploadEvent,
+  UploadListResponse,
 } from "@droparr/shared";
 
 async function request<T>(
@@ -134,11 +136,18 @@ export const api = {
       `/api/jobs/${id}`,
     ),
 
+  // Uploads
+  uploads: (dropId: string) =>
+    request<UploadListResponse>(
+      `/api/uploads?dropId=${encodeURIComponent(dropId)}`,
+    ),
+
   // History
   history: () => request<HistoryEntry[]>("/api/history"),
 };
 
 export interface JobEvent {
+  type: "job";
   jobId: string;
   phase:
     | "queued"
@@ -164,17 +173,35 @@ export interface JobEvent {
   };
 }
 
-export function connectJobEvents(onEvent: (e: JobEvent) => void): () => void {
+/** Server event stream: import jobs and upload progress share one socket. */
+export type ServerEvent = JobEvent | UploadEvent;
+
+export function connectEvents(onEvent: (e: ServerEvent) => void): () => void {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(`${proto}//${location.host}/api/ws`);
   ws.onmessage = (msg) => {
     try {
-      onEvent(JSON.parse(msg.data as string) as JobEvent);
+      const event = JSON.parse(msg.data as string) as ServerEvent;
+      if (event?.type === "job" || event?.type === "upload") onEvent(event);
     } catch {
       // ignore malformed frames
     }
   };
   return () => ws.close();
+}
+
+export function connectJobEvents(onEvent: (e: JobEvent) => void): () => void {
+  return connectEvents((e) => {
+    if (e.type === "job") onEvent(e);
+  });
+}
+
+export function connectUploadEvents(
+  onEvent: (e: UploadEvent) => void,
+): () => void {
+  return connectEvents((e) => {
+    if (e.type === "upload") onEvent(e);
+  });
 }
 
 export function formatBytes(bytes: number): string {
