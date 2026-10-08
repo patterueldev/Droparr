@@ -6,6 +6,7 @@ import {
   type DroparrConfig,
   type Instance,
 } from "@droparr/shared";
+import { zodToReadableErrors } from "./zod-helpers.js";
 
 const EMPTY_CONFIG: DroparrConfig = {
   instances: [],
@@ -31,8 +32,19 @@ export class ConfigStore {
       path ?? process.env.DROPARR_CONFIG ?? join(process.cwd(), "data", "config.json");
     try {
       const raw = await readFile(filePath, "utf-8");
-      const parsed = droparrConfigSchema.parse(JSON.parse(raw));
-      return new ConfigStore(filePath, parsed);
+      let json: unknown;
+      try {
+        json = JSON.parse(raw);
+      } catch {
+        throw new Error(`Droparr config at ${filePath} is not valid JSON`);
+      }
+      const parsed = droparrConfigSchema.safeParse(json);
+      if (!parsed.success) {
+        throw new Error(
+          `Invalid Droparr config at ${filePath}: ${zodToReadableErrors(parsed.error).join("; ")}`,
+        );
+      }
+      return new ConfigStore(filePath, parsed.data);
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         return new ConfigStore(filePath, structuredClone(EMPTY_CONFIG));
@@ -134,5 +146,11 @@ export class ConfigStore {
     this.config = { ...this.config, ...patch };
     await this.save();
     return this.config;
+  }
+
+  /** Replace the whole configuration (settings import). */
+  async replace(config: DroparrConfig): Promise<void> {
+    this.config = config;
+    await this.save();
   }
 }

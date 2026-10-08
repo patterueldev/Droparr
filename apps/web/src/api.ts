@@ -26,8 +26,9 @@ async function request<T>(
     try {
       const data = (await res.json()) as { error?: unknown };
       if (data.error) {
-        detail =
-          typeof data.error === "string"
+        detail = Array.isArray(data.error)
+          ? data.error.join("; ")
+          : typeof data.error === "string"
             ? data.error
             : JSON.stringify(data.error);
       }
@@ -45,6 +46,19 @@ export const api = {
   settings: () => request<DroparrConfig>("/api/settings"),
   updateSettings: (body: Partial<DroparrConfig>) =>
     request<DroparrConfig>("/api/settings", { method: "PUT", body }),
+  exportSettings: () =>
+    request<{
+      app: "droparr";
+      formatVersion: number;
+      exportedAt?: string;
+      config: DroparrConfig;
+    }>("/api/settings/export"),
+  importSettings: (payload: unknown) =>
+    request<{
+      ok: boolean;
+      warnings: string[];
+      summary: { instances: number; categories: number };
+    }>("/api/settings/import", { method: "POST", body: payload }),
 
   // Instances
   instances: () => request<Instance[]>("/api/instances"),

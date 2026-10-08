@@ -41,7 +41,8 @@ export const categorySchema = z.object({
 export const droparrConfigSchema = z.object({
   instances: z.array(instanceSchema),
   categories: z.array(categorySchema),
-  stagingDir: z.string().min(1),
+  // May be empty until the user configures it in Settings.
+  stagingDir: z.string(),
   jellyfin: z
     .object({
       baseUrl: z.string().url(),
@@ -99,4 +100,14 @@ export const historyEntrySchema = z.object({
     started: z.string().datetime(),
     completed: z.string().datetime().optional(),
   }),
+});
+
+/** Current settings export format version. */
+export const SETTINGS_EXPORT_FORMAT_VERSION = 1;
+
+export const settingsExportSchema = z.object({
+  app: z.literal("droparr"),
+  formatVersion: z.number().int().positive(),
+  exportedAt: z.string().optional(),
+  config: droparrConfigSchema,
 });

@@ -36,6 +36,7 @@ export default function SettingsView() {
         instances={instances}
         onChanged={refresh}
       />
+      <BackupSection onChanged={refresh} />
     </div>
   );
 }
@@ -732,5 +733,119 @@ function Field({
       <span className="text-xs text-zinc-400">{label}</span>
       {children}
     </label>
+  );
+}
+
+function BackupSection({ onChanged }: { onChanged: () => void }) {
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(
+    null,
+  );
+  const [busy, setBusy] = useState(false);
+
+  const exportSettings = async () => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      const payload = await api.exportSettings();
+      const blob = new Blob([JSON.stringify(payload, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `droparr-settings-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatus({ ok: true, text: "Settings exported." });
+    } catch (err) {
+      setStatus({
+        ok: false,
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const importSettings = async (file: File) => {
+    setStatus(null);
+    let payload: unknown;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch {
+      setStatus({ ok: false, text: "That file is not valid JSON." });
+      return;
+    }
+    if (
+      !confirm(
+        "Importing replaces ALL current settings — instances, categories and the staging directory. Continue?",
+      )
+    ) {
+      if (fileInput.current) fileInput.current.value = "";
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await api.importSettings(payload);
+      const summary = `Imported ${res.summary.instances} instance(s) and ${res.summary.categories} category(ies).`;
+      setStatus({
+        ok: true,
+        text:
+          res.warnings.length > 0
+            ? `${summary} ${res.warnings.join(" ")}`
+            : summary,
+      });
+      onChanged();
+    } catch (err) {
+      setStatus({
+        ok: false,
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setBusy(false);
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  };
+
+  return (
+    <Section
+      title="Backup & migration"
+      subtitle="Export this configuration and import it on another Droparr — for example when moving from a test machine to your production server. The file contains API keys, so keep it private."
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={exportSettings}
+          disabled={busy}
+          className="rounded-md border border-zinc-600 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
+        >
+          ⬇ Export settings
+        </button>
+        <button
+          onClick={() => fileInput.current?.click()}
+          disabled={busy}
+          className="rounded-md border border-zinc-600 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
+        >
+          ⬆ Import settings…
+        </button>
+        <input
+          ref={fileInput}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) void importSettings(file);
+          }}
+        />
+      </div>
+      {status && (
+        <p
+          className={`text-xs ${status.ok ? "text-emerald-400" : "text-red-400"}`}
+        >
+          {status.text}
+        </p>
+      )}
+    </Section>
   );
 }
