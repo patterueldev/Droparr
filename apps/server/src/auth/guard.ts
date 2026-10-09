@@ -42,7 +42,7 @@ function pathname(url: string): string {
  * - public paths → allowed
  * - authenticated → allowed (`/api/auth/*` routes also serve submitters)
  * - any other API route → admin only for now; submitters get their own routes
- *   in M3.
+ *   in M3 (the `/api/ws` event stream is admin-only until then, too).
  *
  * `/api/ws` authenticates inside the WebSocket handler so it can close the
  * socket with a 4401 code instead of an HTTP reply.

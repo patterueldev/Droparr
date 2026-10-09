@@ -21,6 +21,7 @@ import { LoginThrottle } from "./auth/throttle.js";
 import { AuthEvents, type SessionRevokedEvent } from "./auth/events.js";
 import { authGuard } from "./auth/guard.js";
 import { authRoutes } from "./routes/auth.js";
+import { userRoutes } from "./routes/users.js";
 import { setupRoutes } from "./routes/setup.js";
 import { instanceRoutes } from "./routes/instances.js";
 import { categoryRoutes } from "./routes/categories.js";
@@ -114,6 +115,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
 
   // API routes
   authRoutes(app, { config, db, sessions, throttle, authEvents });
+  userRoutes(app, { db, authEvents });
   setupRoutes(app, { config, db });
   instanceRoutes(app, config);
   categoryRoutes(app, config);
@@ -135,12 +137,18 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
   // Live progress stream. Every job/upload event is broadcast; job clients
   // filter by jobId, upload clients by dropId. `GET /api/jobs/:id` replays
   // job events after a reconnect.
-  // Unauthenticated upgrades are closed with 4401; when the session behind a
-  // socket is revoked the socket is told and closed immediately.
+  // Unauthenticated upgrades are closed with 4401; the event stream carries
+  // every user's activity, so it stays admin-only (4403) until M3.4 scopes
+  // events to their owner. When the session behind a socket is revoked the
+  // socket is told and closed immediately.
   app.get("/api/ws", { websocket: true }, (socket, req) => {
     const resolved = sessions.resolve(req);
     if (!resolved) {
       socket.close(4401, "Unauthorized");
+      return;
+    }
+    if (resolved.user.role !== "admin") {
+      socket.close(4403, "Admin access required");
       return;
     }
 
