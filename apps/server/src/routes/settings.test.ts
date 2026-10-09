@@ -169,10 +169,25 @@ describe("settings routes — notifications", () => {
     });
     expect(off.json().notifications.enabled).toBe(false);
 
+    // While disabled the URL may be empty — clearing it must save (RF-1).
+    const cleared = await h.app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: {
+        notifications: { enabled: false, url: "", format: "ntfy" },
+      },
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json().notifications).toEqual({
+      enabled: false,
+      url: "",
+      format: "ntfy",
+    });
+
     const reloaded = await h.app.inject({ url: "/api/settings" });
     expect(reloaded.json().notifications).toEqual({
       enabled: false,
-      url: "https://ntfy.sh/droparr",
+      url: "",
       format: "ntfy",
     });
   });
@@ -191,6 +206,17 @@ describe("settings routes — notifications", () => {
       });
       expect(res.statusCode).toBe(400);
     }
+
+    // Enabling without a URL explains itself instead of a bare "Invalid url".
+    const emptyEnabled = await h.app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { notifications: { enabled: true, url: "", format: "ntfy" } },
+    });
+    expect(emptyEnabled.statusCode).toBe(400);
+    expect(JSON.stringify(emptyEnabled.json())).toContain(
+      "required when notifications are enabled",
+    );
   });
 
   it("sends a test notification through the transport", async () => {

@@ -4,8 +4,10 @@ import { z } from "zod";
 import { JellyfinClient } from "@droparr/core";
 import {
   jellyfinBaseUrlSchema,
+  notificationFormatSchema,
   notificationSettingsSchema,
   uploadSettingsSchema,
+  webhookUrlSchema,
 } from "@droparr/shared";
 import type { ConfigStore } from "../config/store.js";
 import { buildExport, validateImport } from "../config/import.js";
@@ -25,6 +27,12 @@ const settingsSchema = z.object({
   llm: z
     .object({ provider: z.string(), apiKey: z.string(), model: z.string() })
     .optional(),
+});
+
+/** Test send: a real URL is always required, regardless of the saved switch. */
+const notificationsTestSchema = z.object({
+  url: webhookUrlSchema,
+  format: notificationFormatSchema,
 });
 
 export interface SettingsRouteDeps {
@@ -83,9 +91,7 @@ export function settingsRoutes(
    * disabled. Delivery failures answer 502 with the transport error.
    */
   app.post("/api/settings/notifications/test", async (req, reply) => {
-    const parsed = notificationSettingsSchema
-      .pick({ url: true, format: true })
-      .safeParse(req.body);
+    const parsed = notificationsTestSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: parsed.error.flatten() });
     }

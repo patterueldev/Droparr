@@ -91,7 +91,9 @@ export type NotificationFormat = "ntfy" | "discord";
 /**
  * Optional outbound notifications. Off unless `enabled` and a URL are set.
  * `url` is an ntfy topic URL (`https://ntfy.sh/my-topic` or self-hosted) or a
- * Discord webhook URL — it can carry a secret, like the API keys.
+ * Discord webhook URL — it can carry a secret, like the API keys. It may be
+ * empty while disabled (cleared without re-enabling); enabling requires a
+ * valid http(s) URL.
  */
 export interface NotificationSettings {
   enabled: boolean;

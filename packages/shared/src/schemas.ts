@@ -82,18 +82,46 @@ export const uploadSettingsSchema = z.object({
   retentionDays: z.number().int().nonnegative().optional(),
 });
 
-export const notificationSettingsSchema = z.object({
+export const notificationFormatSchema = z.enum(["ntfy", "discord"]);
+
+/**
+ * Webhook target — http(s) only. Used wherever a URL is about to be posted
+ * to (config validation while enabled, the settings test send).
+ */
+export const webhookUrlSchema = z
+  .string()
+  .url()
+  .max(2048)
+  .refine((value) => /^https?:\/\//i.test(value), {
+    message: "Webhook URL must start with http:// or https://",
+  });
+
+const notificationSettingsBaseSchema = z.object({
   enabled: z.boolean(),
-  /** ntfy topic URL or Discord webhook URL — http(s) only. */
-  url: z
-    .string()
-    .url()
-    .max(2048)
-    .refine((value) => /^https?:\/\//i.test(value), {
-      message: "Webhook URL must start with http:// or https://",
-    }),
-  format: z.enum(["ntfy", "discord"]),
+  /**
+   * ntfy topic URL or Discord webhook URL. Required while enabled; may be
+   * empty while disabled, so the URL can be cleared without re-enabling.
+   */
+  url: z.string().max(2048),
+  format: notificationFormatSchema,
 });
+
+export const notificationSettingsSchema =
+  notificationSettingsBaseSchema.superRefine((value, ctx) => {
+    if (!value.enabled) return;
+    // Enabling delivery requires a usable URL (the transport would fail).
+    const parsed = webhookUrlSchema.safeParse(value.url);
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["url"],
+        message:
+          value.url.trim() === ""
+            ? "Webhook URL is required when notifications are enabled"
+            : (parsed.error.issues[0]?.message ?? "Invalid webhook URL"),
+      });
+    }
+  });
 
 export const droparrConfigSchema = z.object({
   instances: z.array(instanceSchema),
