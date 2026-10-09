@@ -85,6 +85,20 @@ export interface Category {
   seriesType: SeriesType;
 }
 
+/** Webhook flavors for optional notifications (M3.5). */
+export type NotificationFormat = "ntfy" | "discord";
+
+/**
+ * Optional outbound notifications. Off unless `enabled` and a URL are set.
+ * `url` is an ntfy topic URL (`https://ntfy.sh/my-topic` or self-hosted) or a
+ * Discord webhook URL — it can carry a secret, like the API keys.
+ */
+export interface NotificationSettings {
+  enabled: boolean;
+  url: string;
+  format: NotificationFormat;
+}
+
 export interface UploadSettings {
   /** Where browser uploads land before staging. Defaults to <dataDir>/quarantine. */
   quarantineDir?: string;
@@ -114,6 +128,7 @@ export interface DroparrConfig {
     baseUrl: string;
     apiKey?: string;
   };
+  notifications?: NotificationSettings;
   llm?: {
     provider: string;
     apiKey: string;

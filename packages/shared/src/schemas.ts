@@ -82,6 +82,19 @@ export const uploadSettingsSchema = z.object({
   retentionDays: z.number().int().nonnegative().optional(),
 });
 
+export const notificationSettingsSchema = z.object({
+  enabled: z.boolean(),
+  /** ntfy topic URL or Discord webhook URL — http(s) only. */
+  url: z
+    .string()
+    .url()
+    .max(2048)
+    .refine((value) => /^https?:\/\//i.test(value), {
+      message: "Webhook URL must start with http:// or https://",
+    }),
+  format: z.enum(["ntfy", "discord"]),
+});
+
 export const droparrConfigSchema = z.object({
   instances: z.array(instanceSchema),
   categories: z.array(categorySchema),
@@ -94,6 +107,7 @@ export const droparrConfigSchema = z.object({
       apiKey: z.string().optional(),
     })
     .optional(),
+  notifications: notificationSettingsSchema.optional(),
   llm: z
     .object({
       provider: z.string(),
