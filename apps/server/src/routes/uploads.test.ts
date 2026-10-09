@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { UploadEvent } from "@droparr/shared";
+import type { UploadEvent, User } from "@droparr/shared";
 import { buildApp } from "../app.js";
 import { Db } from "../db.js";
 import { UploadEventBus } from "../uploads/events.js";
@@ -30,6 +30,8 @@ interface Harness {
   quarantineDir: string;
   settings: UploadSettings;
   tmp: string;
+  /** Switch the authenticated user for subsequent requests. */
+  setUser: (user: User) => void;
 }
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -39,6 +41,22 @@ afterEach(async () => {
     await cleanups.pop()!();
   }
 });
+
+function testUser(
+  role: User["role"],
+  id: string,
+  trusted = false,
+): User {
+  return {
+    id,
+    jellyfinUserId: `jf-${id}`,
+    name: id,
+    role,
+    trusted,
+    blocked: false,
+    createdAt: new Date().toISOString(),
+  };
+}
 
 async function buildHarness(
   opts: HarnessOptions & { baseDir?: string } = {},
@@ -59,6 +77,23 @@ async function buildHarness(
   events.on("event", (e: UploadEvent) => received.push(e));
   const locks = new UploadLocks();
   const app = Fastify();
+  // The global guard decorates `auth` in production; the route harness runs
+  // the auth pipeline itself with a switchable current user.
+  let currentUser = testUser("admin", "user-admin");
+  app.decorateRequest("auth");
+  app.addHook("onRequest", async (req) => {
+    req.auth = {
+      user: currentUser,
+      session: {
+        id: "test-session",
+        userId: currentUser.id,
+        tokenHash: "test-hash",
+        createdAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    };
+  });
   uploadRoutes(app, {
     db,
     events,
@@ -72,7 +107,18 @@ async function buildHarness(
     await app.close();
     await rm(tmp, { recursive: true, force: true });
   });
-  return { app, db, locks, received, quarantineDir, settings, tmp };
+  return {
+    app,
+    db,
+    locks,
+    received,
+    quarantineDir,
+    settings,
+    tmp,
+    setUser: (user) => {
+      currentUser = user;
+    },
+  };
 }
 
 function encodeMetadata(metadata: Record<string, string>): string {
@@ -510,6 +556,70 @@ describe("termination and listing", () => {
     expect(res.headers["tus-version"]).toBe("1.0.0");
     expect(res.headers["tus-extension"]).toContain("creation");
     expect(res.headers["tus-extension"]).toContain("termination");
+  });
+});
+
+describe("upload ownership (M3.3)", () => {
+  it("records the creator and hides the upload from other users", async () => {
+    const h = await buildHarness();
+    h.setUser(testUser("submitter", "user-a"));
+    const created = await createUpload(h.app, {
+      filename: "a.mkv",
+      size: 100,
+      dropId: "owneddrop",
+    });
+    expect(created.statusCode).toBe(201);
+    const id = (created.json() as { upload: { id: string } }).upload.id;
+    expect(h.db.getUpload(id)?.userId).toBe("user-a");
+    expect(h.received[0]?.userId).toBe("user-a");
+
+    h.setUser(testUser("submitter", "user-b"));
+    const head = await h.app.inject({
+      method: "HEAD",
+      url: `/api/uploads/${id}`,
+      headers: TUS_HEADERS,
+    });
+    expect(head.statusCode).toBe(404);
+    const list = await h.app.inject({ url: "/api/uploads?dropId=owneddrop" });
+    expect(list.statusCode).toBe(404);
+    const del = await h.app.inject({
+      method: "DELETE",
+      url: `/api/uploads/${id}`,
+      headers: TUS_HEADERS,
+    });
+    expect(del.statusCode).toBe(404);
+    expect(h.db.getUpload(id)).toBeDefined();
+
+    // The admin can still reach every upload.
+    h.setUser(testUser("admin", "user-admin"));
+    const asAdmin = await h.app.inject({
+      method: "HEAD",
+      url: `/api/uploads/${id}`,
+      headers: TUS_HEADERS,
+    });
+    expect(asAdmin.statusCode).toBe(200);
+  });
+
+  it("requires dropId for submitters but not admins", async () => {
+    const h = await buildHarness();
+    h.setUser(testUser("submitter", "user-a"));
+    const scoped = await h.app.inject({ url: "/api/uploads" });
+    expect(scoped.statusCode).toBe(400);
+
+    h.setUser(testUser("admin", "user-admin"));
+    const all = await h.app.inject({ url: "/api/uploads" });
+    expect(all.statusCode).toBe(200);
+  });
+
+  it("serves safe upload limits to submitters", async () => {
+    const h = await buildHarness({ maxFileBytes: 123, maxSubmissionBytes: 456 });
+    h.setUser(testUser("submitter", "user-a"));
+    const res = await h.app.inject({ url: "/api/uploads/config" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      maxFileSizeBytes: 123,
+      maxSubmissionSizeBytes: 456,
+    });
   });
 });
 

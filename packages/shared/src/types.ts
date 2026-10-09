@@ -9,6 +9,7 @@ export type SubmissionState =
   | "approved"
   | "importing"
   | "done"
+  | "failed"
   | "rejected";
 
 export type UserRole = "admin" | "submitter";
@@ -170,14 +171,58 @@ export interface FolderAnalysisItem extends FolderAnalysis {
   subPath: string;
 }
 
+/** A *arr lookup result chosen for an import. */
+export interface MatchSelection {
+  tvdbId?: number;
+  tmdbId?: number;
+  title: string;
+  year?: number;
+  /** Raw lookup payload (posters, seasons, ids) kept for the review UI. */
+  extra?: Record<string, unknown>;
+}
+
+/**
+ * One reviewable/importable item of a submission. A plain drop yields a
+ * single item (`subPath: ""`); a multi-movie drop fans out into one item per
+ * sibling movie folder.
+ */
+export interface SubmissionItem {
+  /** Path from the drop root to this item's folder (`""` for drop-root files). */
+  subPath: string;
+  /** Absolute path to import from (the item's folder, or the drop root). */
+  sourcePath: string;
+  analysis: FolderAnalysisItem;
+  /** Title/year as confirmed (or corrected) before submission. */
+  title: string;
+  year?: number;
+  /** Routing category; suggested on submit, fixable by the admin in the queue. */
+  categoryId?: string;
+  match?: MatchSelection | null;
+  seasons?: number[];
+  include: boolean;
+}
+
+/** A drop awaiting (or having run) an approval import (M3.3). */
 export interface Submission {
   id: string;
   submitterId: string;
   state: SubmissionState;
-  files: FileRef[];
-  analysis: FolderAnalysis;
+  /** Client-generated id grouping the uploaded files in quarantine. */
+  dropId: string;
+  dropName: string;
+  /** Absolute quarantine path of the drop (server-side coordinate). */
+  sourcePath: string;
+  items: SubmissionItem[];
+  importMode: "move" | "copy";
+  /** Admin rejection note, shown to the submitter. */
+  note?: string;
+  /** Job ids of the approval import, for live progress after reconnects. */
+  jobIds?: string[];
   createdAt: string;
   updatedAt: string;
+  completedAt?: string;
+  /** Response-only: submitter display name (queue list). */
+  submitterName?: string;
 }
 
 /** A staged file the *arr rejected during manual-import preflight. */
@@ -188,6 +233,8 @@ export interface HistoryRejectedFile {
 
 export interface HistoryEntry {
   id: string;
+  /** Set when the import ran from an approved submission (M3.3). */
+  submissionId?: string;
   instanceId: string;
   kind: InstanceKind;
   title: string;

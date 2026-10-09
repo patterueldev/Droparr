@@ -58,8 +58,11 @@ export default function UploadPanel({
   uploadSettings,
   onAnalyze,
 }: {
-  uploadSettings?: UploadSettings;
-  onAnalyze: (path: string) => void;
+  uploadSettings?: Pick<
+    UploadSettings,
+    "maxFileSizeBytes" | "maxSubmissionSizeBytes"
+  >;
+  onAnalyze: (path: string, dropId: string) => void;
 }) {
   const [entries, setEntries] = useState<FileEntry[]>([]);
   // Resume the drop from the stored record so files re-added after a browser
@@ -544,7 +547,7 @@ export default function UploadPanel({
         </button>
         {allDone && completePath ? (
           <button
-            onClick={() => onAnalyze(completePath)}
+            onClick={() => onAnalyze(completePath, dropId)}
             className="rounded-md bg-emerald-600 hover:bg-emerald-500 px-5 py-2 text-sm font-medium"
           >
             Analyze drop →

@@ -5,15 +5,17 @@ describe("tabsForRole", () => {
   it("shows admins the full app", () => {
     expect(tabsForRole("admin").map((tab) => tab.id)).toEqual([
       "import",
+      "queue",
       "history",
       "users",
       "settings",
     ]);
   });
 
-  it("shows submitters only their account", () => {
-    expect(tabsForRole("submitter")).toEqual([
-      { id: "account", label: "Account" },
+  it("shows submitters their submit view and account", () => {
+    expect(tabsForRole("submitter").map((tab) => tab.id)).toEqual([
+      "submit",
+      "account",
     ]);
   });
 });

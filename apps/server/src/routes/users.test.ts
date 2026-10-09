@@ -215,9 +215,7 @@ describe("user management API", () => {
       { method: "GET", url: "/api/fs/list" },
       { method: "POST", url: "/api/analyze" },
       { method: "POST", url: "/api/import" },
-      { method: "GET", url: "/api/jobs/some-job" },
       { method: "GET", url: "/api/history" },
-      { method: "GET", url: "/api/uploads" },
       { method: "GET", url: "/api/users" },
       { method: "PATCH", url: "/api/users/some-user" },
     ];

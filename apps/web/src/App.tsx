@@ -4,6 +4,8 @@ import type { User } from "@droparr/shared";
 import { api, connectSessionRevoked } from "./api";
 import { tabsForRole, type Tab } from "./roles";
 import ImportView from "./views/ImportView";
+import QueueView from "./views/QueueView";
+import SubmitView from "./views/SubmitView";
 import HistoryView from "./views/HistoryView";
 import SettingsView from "./views/SettingsView";
 import UsersView from "./views/UsersView";
@@ -88,15 +90,14 @@ function Shell({ user }: { user: User }) {
   }, [tabs, tab]);
 
   // The server closes this socket and says so when the session is revoked.
-  // Only admins may open /api/ws today (M3.4 scopes events per user), so
-  // submitters skip the connection instead of triggering a 4403 close;
-  // their sessions still end via the 401 path when a request is made.
-  useEffect(() => {
-    if (user.role !== "admin") return;
-    return connectSessionRevoked(() => {
-      void queryClient.invalidateQueries({ queryKey: ["auth"] });
-    });
-  }, [user.role, queryClient]);
+  // Frames are scoped per user server-side, so every role can connect.
+  useEffect(
+    () =>
+      connectSessionRevoked(() => {
+        void queryClient.invalidateQueries({ queryKey: ["auth"] });
+      }),
+    [queryClient],
+  );
 
   const signOut = async () => {
     try {
@@ -164,9 +165,11 @@ function Shell({ user }: { user: User }) {
       </header>
       <main className="mx-auto max-w-5xl px-4 py-6">
         {tab === "import" && <ImportView onOpenSettings={() => setTab("settings")} />}
+        {tab === "queue" && <QueueView />}
         {tab === "history" && <HistoryView />}
         {tab === "users" && <UsersView currentUser={user} />}
         {tab === "settings" && <SettingsView />}
+        {tab === "submit" && <SubmitView />}
         {tab === "account" && <AccountView user={user} />}
       </main>
     </div>

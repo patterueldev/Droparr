@@ -122,14 +122,45 @@ export const folderAnalysisSchema = z.object({
   reasoning: z.array(z.string()),
 });
 
+export const folderAnalysisItemSchema = folderAnalysisSchema.extend({
+  subPath: z.string(),
+});
+
+export const matchSelectionSchema = z.object({
+  tvdbId: z.number().int().positive().optional(),
+  tmdbId: z.number().int().positive().optional(),
+  title: z.string().min(1),
+  year: z.number().int().optional(),
+  extra: z.record(z.unknown()).optional(),
+});
+
+export const submissionItemSchema = z.object({
+  subPath: z.string(),
+  sourcePath: z.string().min(1),
+  analysis: folderAnalysisItemSchema,
+  title: z.string(),
+  year: z.number().int().optional(),
+  categoryId: z.string().min(1).optional(),
+  match: matchSelectionSchema.nullish(),
+  seasons: z.array(z.number().int().nonnegative()).optional(),
+  include: z.boolean(),
+});
+
 export const submissionSchema = z.object({
   id: z.string().min(1),
   submitterId: z.string().min(1),
   state: submissionStateSchema,
-  files: z.array(fileRefSchema),
-  analysis: folderAnalysisSchema,
+  dropId: z.string().min(1),
+  dropName: z.string(),
+  sourcePath: z.string().min(1),
+  items: z.array(submissionItemSchema),
+  importMode: z.enum(["move", "copy"]),
+  note: z.string().optional(),
+  jobIds: z.array(z.string()).optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  completedAt: z.string().datetime().optional(),
+  submitterName: z.string().optional(),
 });
 
 export const historyRejectedFileSchema = z.object({
@@ -139,6 +170,7 @@ export const historyRejectedFileSchema = z.object({
 
 export const historyEntrySchema = z.object({
   id: z.string().min(1),
+  submissionId: z.string().optional(),
   instanceId: z.string().min(1),
   kind: instanceKindSchema,
   title: z.string(),

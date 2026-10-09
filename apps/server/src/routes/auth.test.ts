@@ -444,6 +444,70 @@ describe("sessions and roles", () => {
     expect(settings.statusCode).toBe(403);
   });
 
+  it("opens uploads and submissions to submitters, everything else stays admin (M3.3)", async () => {
+    await makeApp();
+    stubJellyfin(DEFAULT_CREDS);
+    await completeSetup();
+
+    const cookie = sessionCookie(await login("sister", "swordfish"));
+
+    // Upload surface: capabilities, safe limits, and a real creation.
+    const options = await built!.app.inject({
+      method: "OPTIONS",
+      url: "/api/uploads",
+      headers: { cookie },
+    });
+    expect(options.statusCode).toBe(204);
+    const config = await built!.app.inject({
+      method: "GET",
+      url: "/api/uploads/config",
+      headers: { cookie },
+    });
+    expect(config.statusCode).toBe(200);
+    expect(config.json()).toMatchObject({
+      maxFileSizeBytes: expect.any(Number),
+      maxSubmissionSizeBytes: expect.any(Number),
+    });
+    const created = await built!.app.inject({
+      method: "POST",
+      url: "/api/uploads",
+      headers: {
+        cookie,
+        "tus-resumable": "1.0.0",
+        "upload-length": "10",
+        "upload-metadata": `filename ${Buffer.from("movie.mkv").toString("base64")},dropid sisterdrop`,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+
+    // Submissions are reachable (own list) but decisions stay admin-only.
+    const submissions = await built!.app.inject({
+      method: "GET",
+      url: "/api/submissions",
+      headers: { cookie },
+    });
+    expect(submissions.statusCode).toBe(200);
+    expect(submissions.json()).toEqual([]);
+    const approve = await built!.app.inject({
+      method: "POST",
+      url: "/api/submissions/unknown/approve",
+      headers: { cookie },
+    });
+    expect(approve.statusCode).toBe(403);
+
+    // Admin config and filesystem browsing stay closed.
+    for (const url of [
+      "/api/settings",
+      "/api/fs/list",
+      "/api/instances",
+      "/api/history",
+      "/api/import",
+    ]) {
+      const res = await built!.app.inject({ method: "GET", url, headers: { cookie } });
+      expect(res.statusCode, url).toBe(403);
+    }
+  });
+
   it("requires a session for protected routes", async () => {
     await makeApp();
     stubJellyfin(DEFAULT_CREDS);

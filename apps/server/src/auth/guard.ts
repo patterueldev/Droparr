@@ -19,6 +19,22 @@ const PUBLIC_PATHS = new Set([
 ]);
 
 /**
+ * Paths a submitter may reach (M3.3): uploads and submissions, plus job
+ * replay/tracking. Ownership and admin-only checks for these endpoints live
+ * in the route handlers; everything else stays admin-only.
+ */
+function submitterAllowed(path: string): boolean {
+  return (
+    path === "/api/uploads" ||
+    path.startsWith("/api/uploads/") ||
+    path === "/api/submissions" ||
+    path.startsWith("/api/submissions/") ||
+    path === "/api/jobs" ||
+    path.startsWith("/api/jobs/")
+  );
+}
+
+/**
  * Routes allowed while first-run setup is incomplete. Setup routes lock
  * themselves once the marker is set.
  */
@@ -40,12 +56,15 @@ function pathname(url: string): string {
  * - while first-run setup is incomplete → only health/auth/setup respond;
  *   everything else gets `409 { code: "setup_required" }`
  * - public paths → allowed
- * - authenticated → allowed (`/api/auth/*` routes also serve submitters)
- * - any other API route → admin only for now; submitters get their own routes
- *   in M3 (the `/api/ws` event stream is admin-only until then, too).
+ * - authenticated → auth routes are always available; uploads, submissions and
+ *   job tracking are available to submitters too, with ownership enforced in
+ *   the route handlers
+ * - any other API route → admin only (settings, instances, categories, fs,
+ *   import, history, users)
  *
  * `/api/ws` authenticates inside the WebSocket handler so it can close the
- * socket with a 4401 code instead of an HTTP reply.
+ * socket with a 4401 code instead of an HTTP reply; frames are scoped per
+ * user there.
  */
 export function authGuard(
   app: FastifyInstance,
@@ -82,7 +101,11 @@ export function authGuard(
     if (!req.auth) {
       return reply.code(401).send({ error: "Authentication required" });
     }
-    if (req.auth.user.role !== "admin" && !path.startsWith("/api/auth/")) {
+    if (
+      req.auth.user.role !== "admin" &&
+      !path.startsWith("/api/auth/") &&
+      !submitterAllowed(path)
+    ) {
       return reply.code(403).send({ error: "Admin access required" });
     }
   });

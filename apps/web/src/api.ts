@@ -7,8 +7,11 @@ import type {
   FolderAnalysisItem,
   HistoryEntry,
   Instance,
+  MatchSelection,
   SetupStatus,
   StagingCheckIssue,
+  Submission,
+  SubmissionState,
   UploadEvent,
   UploadListResponse,
   User,
@@ -213,6 +216,37 @@ export const api = {
     request<UploadListResponse>(
       `/api/uploads?dropId=${encodeURIComponent(dropId)}`,
     ),
+  /** Safe upload limits for the submit view (no admin settings payload). */
+  uploadConfig: () =>
+    request<{ maxFileSizeBytes: number; maxSubmissionSizeBytes: number }>(
+      "/api/uploads/config",
+    ),
+
+  // Submissions (M3.3)
+  submissionAnalyze: (dropId: string, term?: string) =>
+    request<SubmissionAnalyzeResponse>("/api/submissions/analyze", {
+      method: "POST",
+      body: term ? { dropId, term } : { dropId },
+    }),
+  createSubmission: (body: SubmissionCreateBody) =>
+    request<Submission>("/api/submissions", { method: "POST", body }),
+  submissions: (state?: SubmissionState) =>
+    request<Submission[]>(
+      `/api/submissions${state ? `?state=${state}` : ""}`,
+    ),
+  submission: (id: string) => request<Submission>(`/api/submissions/${id}`),
+  updateSubmission: (id: string, body: SubmissionEditBody) =>
+    request<Submission>(`/api/submissions/${id}`, { method: "PATCH", body }),
+  approveSubmission: (id: string, body: SubmissionEditBody = {}) =>
+    request<Submission>(`/api/submissions/${id}/approve`, {
+      method: "POST",
+      body,
+    }),
+  rejectSubmission: (id: string, note?: string) =>
+    request<Submission>(`/api/submissions/${id}/reject`, {
+      method: "POST",
+      body: { note },
+    }),
 
   // History
   history: () => request<HistoryEntry[]>("/api/history"),
@@ -290,6 +324,46 @@ export interface ImportRequestBody {
   files?: string[];
 }
 
+/** One analyzed item of a quarantined drop, with its suggested match. */
+export interface SubmissionAnalyzeItem extends FolderAnalysisItem {
+  /** Absolute import path for this item (its folder, or the drop root). */
+  sourcePath: string;
+  suggestedMatch?: MatchSelection | null;
+}
+
+export interface SubmissionAnalyzeResponse {
+  sourcePath: string;
+  dropName: string;
+  analysis: FolderAnalysis;
+  items: SubmissionAnalyzeItem[];
+  totalBytes: number;
+  skipped: string[];
+  /** Raw lookup rows when a search term was supplied ("search again"). */
+  results?: Record<string, unknown>[];
+}
+
+/** Per-item review override, keyed by subPath. */
+export interface SubmissionItemPatch {
+  subPath: string;
+  include?: boolean;
+  title?: string;
+  year?: number | null;
+  categoryId?: string;
+  match?: MatchSelection | null;
+  seasons?: number[];
+}
+
+export interface SubmissionCreateBody {
+  dropId: string;
+  importMode?: "move" | "copy";
+  items?: SubmissionItemPatch[];
+}
+
+export interface SubmissionEditBody {
+  items?: SubmissionItemPatch[];
+  importMode?: "move" | "copy";
+}
+
 export interface JobEvent {
   type: "job";
   jobId: string;
@@ -322,11 +396,22 @@ type JobListener = (e: JobEvent) => void;
 type UploadListener = (e: UploadEvent) => void;
 type RevokedListener = () => void;
 
-// One shared WebSocket for all consumers (live job progress, upload progress
-// and session revocation notices). Frames are routed by `type`; job frames
-// without a `type` are legacy job events.
+/** Submission state change, broadcast over `/api/ws` (admin or owner only). */
+export interface SubmissionEvent {
+  type: "submission";
+  submissionId: string;
+  submitterId: string;
+  state: SubmissionState;
+  at: string;
+}
+type SubmissionListener = (e: SubmissionEvent) => void;
+
+// One shared WebSocket for all consumers (live job progress, upload progress,
+// submission state and session revocation notices). Frames are routed by
+// `type`; job frames without a `type` are legacy job events.
 const jobListeners = new Set<JobListener>();
 const uploadListeners = new Set<UploadListener>();
+const submissionListeners = new Set<SubmissionListener>();
 const revokedListeners = new Set<RevokedListener>();
 let socket: WebSocket | null = null;
 
@@ -341,6 +426,7 @@ function ensureSocket(): void {
   if (
     jobListeners.size === 0 &&
     uploadListeners.size === 0 &&
+    submissionListeners.size === 0 &&
     revokedListeners.size === 0
   ) {
     return;
@@ -370,6 +456,12 @@ function ensureSocket(): void {
       }
       return;
     }
+    if (type === "submission") {
+      for (const listener of [...submissionListeners]) {
+        listener(parsed as SubmissionEvent);
+      }
+      return;
+    }
     for (const listener of [...jobListeners]) listener(parsed as JobEvent);
   };
   ws.onclose = () => {
@@ -392,6 +484,17 @@ export function connectUploadEvents(onEvent: UploadListener): () => void {
   ensureSocket();
   return () => {
     uploadListeners.delete(onEvent);
+  };
+}
+
+/** Subscribe to submission state changes. Returns an unsubscribe function. */
+export function connectSubmissionEvents(
+  onEvent: SubmissionListener,
+): () => void {
+  submissionListeners.add(onEvent);
+  ensureSocket();
+  return () => {
+    submissionListeners.delete(onEvent);
   };
 }
 
