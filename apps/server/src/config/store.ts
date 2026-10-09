@@ -142,6 +142,7 @@ export class ConfigStore {
     stagingDir?: string;
     uploads?: DroparrConfig["uploads"];
     jellyfin?: DroparrConfig["jellyfin"];
+    notifications?: DroparrConfig["notifications"];
     llm?: DroparrConfig["llm"];
   }): Promise<DroparrConfig> {
     const next = { ...this.config, ...patch };
@@ -152,6 +153,11 @@ export class ConfigStore {
     }
     if (patch.uploads) {
       next.uploads = { ...this.config.uploads, ...patch.uploads };
+    }
+    if (patch.notifications) {
+      // The settings schema requires a complete object (enabled/url/format),
+      // but merging also backfills an older stored config that predates a field.
+      next.notifications = { ...this.config.notifications, ...patch.notifications };
     }
     if (patch.llm) {
       next.llm = { ...this.config.llm, ...patch.llm };

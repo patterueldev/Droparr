@@ -2,9 +2,16 @@ import type { FastifyInstance } from "fastify";
 import { mkdir, stat } from "node:fs/promises";
 import { z } from "zod";
 import { JellyfinClient } from "@droparr/core";
-import { jellyfinBaseUrlSchema, uploadSettingsSchema } from "@droparr/shared";
+import {
+  jellyfinBaseUrlSchema,
+  notificationFormatSchema,
+  notificationSettingsSchema,
+  uploadSettingsSchema,
+  webhookUrlSchema,
+} from "@droparr/shared";
 import type { ConfigStore } from "../config/store.js";
 import { buildExport, validateImport } from "../config/import.js";
+import { deliverWebhook } from "../notifications/webhook.js";
 import { auditSettingsStaging } from "../staging/check.js";
 import { diskSpace } from "../uploads/disk.js";
 import type { QuarantineCleanup } from "../uploads/cleanup.js";
@@ -16,9 +23,16 @@ const settingsSchema = z.object({
   jellyfin: z
     .object({ baseUrl: jellyfinBaseUrlSchema, apiKey: z.string().optional() })
     .optional(),
+  notifications: notificationSettingsSchema.optional(),
   llm: z
     .object({ provider: z.string(), apiKey: z.string(), model: z.string() })
     .optional(),
+});
+
+/** Test send: a real URL is always required, regardless of the saved switch. */
+const notificationsTestSchema = z.object({
+  url: webhookUrlSchema,
+  format: notificationFormatSchema,
 });
 
 export interface SettingsRouteDeps {
@@ -69,6 +83,27 @@ export function settingsRoutes(
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  });
+
+  /**
+   * Test webhook for Settings → Notifications (admin only). Tests the form's
+   * current values, so it works before saving and while notifications are
+   * disabled. Delivery failures answer 502 with the transport error.
+   */
+  app.post("/api/settings/notifications/test", async (req, reply) => {
+    const parsed = notificationsTestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    const result = await deliverWebhook(parsed.data.format, parsed.data.url, {
+      title: "Droparr test notification",
+      body: "If you can read this, Droparr notifications are configured correctly.",
+      priority: "default",
+    });
+    if (!result.ok) {
+      return reply.code(502).send({ ok: false, error: result.error });
+    }
+    return { ok: true, format: parsed.data.format };
   });
 
   /**

@@ -8,6 +8,7 @@ import type {
   HistoryEntry,
   Instance,
   MatchSelection,
+  NotificationFormat,
   SetupStatus,
   StagingCheckIssue,
   Submission,
@@ -113,6 +114,12 @@ export const api = {
     request<{ ok: boolean; serverName?: string; version?: string }>(
       "/api/settings/jellyfin/test",
       { method: "POST", body: { baseUrl } },
+    ),
+  /** Test send for the Settings → Notifications section (admin). */
+  notificationsTest: (body: { url: string; format: NotificationFormat }) =>
+    request<{ ok: boolean; format?: NotificationFormat }>(
+      "/api/settings/notifications/test",
+      { method: "POST", body },
     ),
 
   // Config

@@ -188,6 +188,39 @@ Ownership enforcement is the M3.3 model: submitters only ever fetch their own
 rows, and job replay answers `404` for jobs they do not own so their ids stay
 indistinguishable from unknown ones.
 
+## Optional notifications (M3.5)
+
+Off by default. Settings → **Notifications** configures exactly one webhook —
+an ntfy topic URL (`https://ntfy.sh/my-topic` or self-hosted) or a Discord
+channel webhook — behind a master switch, plus a **Test** button that sends a
+canned message through the same transport using the form's current values (so
+it works before saving and while notifications are disabled). The URL lives in
+the config JSON and rides along in settings export/import; it can carry a
+secret, like API keys.
+
+A `NotificationService` subscribes to the existing `submission` event bus and
+posts one channel message per meaningful transition (the shared webhook is a
+single channel, so there is no per-admin fan-out):
+
+| Transition | Message |
+| --- | --- |
+| `pending` | "{submitter} submitted "{drop}" — N item(s) waiting for approval" (for admins) |
+| `done` | "{submitter}: "…" is done — imported/total item(s) imported" + *arr rejection count |
+| `failed` | "… could not be imported" + the first job error |
+| `rejected` | "… was rejected" + the admin's note |
+
+`approved`/`importing` (and the pre-submission `uploading`/`analyzing` phases)
+are ignored so progress never spams the channel. Counts come from the
+submission's `jobIds` and the in-memory `JobRegistry`.
+
+Delivery is fire-and-forget: posts carry a 10 s timeout, every failure is
+returned as data and only logged as a warning, so nothing can block or fail an
+import. ntfy gets the message as a plain-text body with `Title`/`Priority`/
+`Tags` headers (the title is dropped when it is not ASCII-safe, since HTTP
+headers are latin-1); Discord gets a single embed. The admin-only
+`POST /api/settings/notifications/test` answers `502 { ok: false, error }` when
+the webhook fails, which is what the Settings UI shows.
+
 ## Verified \*arr API surface
 
 ### Sonarr v4+ (`X-Api-Key` header, base `/api/v3`)
