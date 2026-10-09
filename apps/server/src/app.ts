@@ -17,6 +17,7 @@ import { UploadEventBus } from "./uploads/events.js";
 import { UploadLocks } from "./uploads/locks.js";
 import { resolveUploadSettings } from "./uploads/settings.js";
 import { SubmissionEventBus } from "./submissions/events.js";
+import { NotificationService } from "./notifications/service.js";
 import { SessionService } from "./auth/sessions.js";
 import { LoginThrottle } from "./auth/throttle.js";
 import { AuthEvents, type SessionRevokedEvent } from "./auth/events.js";
@@ -48,6 +49,7 @@ export interface BuiltApp {
   jobs: JobRegistry;
   uploads: UploadEventBus;
   submissions: SubmissionEventBus;
+  notifications: NotificationService;
   uploadLocks: UploadLocks;
   cleanup: QuarantineCleanup;
   authEvents: AuthEvents;
@@ -93,6 +95,18 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
     isDropProtected: (dropId) => db.isDropProtected(dropId),
     log: { warn: (obj, msg) => app.log.warn(obj, msg) },
   });
+
+  // Optional webhook notifications (M3.5): rides the submission event bus, so
+  // every state transition of every flow is covered without route changes.
+  const notifications = new NotificationService({
+    config,
+    db,
+    jobs,
+    submissions,
+    log: { warn: (obj, msg) => app.log.warn(obj, msg) },
+  });
+  notifications.start();
+  app.addHook("onClose", () => notifications.stop());
 
   // Browser clients are served same-origin (Vite proxies /api in dev), so CORS
   // stays off unless explicitly opted in. `origin: true` + credentials would
@@ -227,5 +241,5 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
     }
   }
 
-  return { app, config, db, jobs, uploads, submissions, uploadLocks, cleanup, authEvents };
+  return { app, config, db, jobs, uploads, submissions, notifications, uploadLocks, cleanup, authEvents };
 }
