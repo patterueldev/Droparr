@@ -245,7 +245,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
     });
   });
 
-  app.get("/api/health", async () => ({ ok: true, version: "0.1.0" }));
+  app.get("/api/health", async () => ({
+    ok: true,
+    version: process.env.DROPARR_VERSION ?? "dev",
+  }));
 
   // Serve the built web app when present (production/Docker).
   // In dev, Vite serves the UI and proxies /api here.
