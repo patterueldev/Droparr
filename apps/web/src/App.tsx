@@ -1,14 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { User } from "@droparr/shared";
 import { api, connectSessionRevoked } from "./api";
+import { tabsForRole, type Tab } from "./roles";
 import ImportView from "./views/ImportView";
 import HistoryView from "./views/HistoryView";
 import SettingsView from "./views/SettingsView";
+import UsersView from "./views/UsersView";
+import AccountView from "./views/AccountView";
 import LoginView from "./views/LoginView";
 import SetupView from "./views/SetupView";
-
-type Tab = "import" | "history" | "settings";
 
 export default function App() {
   const queryClient = useQueryClient();
@@ -76,8 +77,15 @@ export default function App() {
 }
 
 function Shell({ user }: { user: User }) {
-  const [tab, setTab] = useState<Tab>("import");
+  const tabs = useMemo(() => tabsForRole(user.role), [user.role]);
+  const [tab, setTab] = useState<Tab>(tabs[0].id);
   const queryClient = useQueryClient();
+
+  // A role change (e.g. demoted from the Users page) can drop the current
+  // tab — fall back to the first one the role can still see.
+  useEffect(() => {
+    if (!tabs.some((t) => t.id === tab)) setTab(tabs[0].id);
+  }, [tabs, tab]);
 
   // The server closes this socket and says so when the session is revoked.
   useEffect(
@@ -111,13 +119,7 @@ function Shell({ user }: { user: User }) {
             </span>
           </div>
           <nav className="flex gap-1 ml-auto">
-            {(
-              [
-                ["import", "Import"],
-                ["history", "History"],
-                ["settings", "Settings"],
-              ] as [Tab, string][]
-            ).map(([id, label]) => (
+            {tabs.map(({ id, label }) => (
               <button
                 key={id}
                 onClick={() => setTab(id)}
@@ -135,6 +137,11 @@ function Shell({ user }: { user: User }) {
             <span className="text-sm text-zinc-300 max-w-[10rem] truncate">
               {user.name}
             </span>
+            {user.role === "submitter" && user.trusted && (
+              <span className="rounded bg-emerald-950 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-400">
+                trusted
+              </span>
+            )}
             <span
               className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${
                 user.role === "admin"
@@ -156,7 +163,9 @@ function Shell({ user }: { user: User }) {
       <main className="mx-auto max-w-5xl px-4 py-6">
         {tab === "import" && <ImportView onOpenSettings={() => setTab("settings")} />}
         {tab === "history" && <HistoryView />}
+        {tab === "users" && <UsersView currentUser={user} />}
         {tab === "settings" && <SettingsView />}
+        {tab === "account" && <AccountView user={user} />}
       </main>
     </div>
   );
