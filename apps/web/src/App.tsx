@@ -24,14 +24,18 @@ export default function App() {
     retry: false,
   });
 
-  // Any 401 from the API means the session is gone — re-check.
+  // Any 401 from the API means the session is gone, and a 409
+  // `setup_required` means the server still expects first-run setup — re-check.
   useEffect(() => {
-    const onUnauthorized = () => {
+    const refreshAuth = () => {
       void queryClient.invalidateQueries({ queryKey: ["auth"] });
     };
-    window.addEventListener("droparr:unauthorized", onUnauthorized);
-    return () =>
-      window.removeEventListener("droparr:unauthorized", onUnauthorized);
+    window.addEventListener("droparr:unauthorized", refreshAuth);
+    window.addEventListener("droparr:setup-required", refreshAuth);
+    return () => {
+      window.removeEventListener("droparr:unauthorized", refreshAuth);
+      window.removeEventListener("droparr:setup-required", refreshAuth);
+    };
   }, [queryClient]);
 
   if (isPending) {

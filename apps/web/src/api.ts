@@ -4,13 +4,28 @@ import type {
   Category,
   DroparrConfig,
   FolderAnalysis,
+  FolderAnalysisItem,
   HistoryEntry,
   Instance,
+  SetupStatus,
   StagingCheckIssue,
   UploadEvent,
   UploadListResponse,
   User,
 } from "@droparr/shared";
+
+/** HTTP failure with the status (and error `code` when the server sends one). */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+
+  constructor(status: number, message: string, code?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
 
 async function request<T>(
   path: string,
@@ -33,8 +48,9 @@ async function request<T>(
   }
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
+    let code: string | undefined;
     try {
-      const data = (await res.json()) as { error?: unknown };
+      const data = (await res.json()) as { error?: unknown; code?: unknown };
       if (data.error) {
         detail = Array.isArray(data.error)
           ? data.error.join("; ")
@@ -42,10 +58,15 @@ async function request<T>(
             ? data.error
             : JSON.stringify(data.error);
       }
+      if (typeof data.code === "string") code = data.code;
     } catch {
       // keep the status text
     }
-    throw new Error(detail);
+    if (code === "setup_required") {
+      // The server is still waiting for first-run setup — re-check auth.
+      window.dispatchEvent(new Event("droparr:setup-required"));
+    }
+    throw new ApiError(res.status, detail, code);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -60,17 +81,23 @@ export const api = {
   sessions: () => request<AuthSession[]>("/api/auth/sessions"),
   revokeSession: (id: string) =>
     request<void>(`/api/auth/sessions/${id}`, { method: "DELETE" }),
-  /** Bootstrap while no Jellyfin URL is configured yet. */
-  jellyfinTest: (baseUrl: string) =>
+
+  // First-run setup wizard (open until setup completes, then locked)
+  setupStatus: () => request<SetupStatus>("/api/setup/status"),
+  setupJellyfinTest: (baseUrl: string) =>
     request<{ ok: boolean; serverName?: string; version?: string }>(
-      "/api/auth/jellyfin/test",
+      "/api/setup/jellyfin/test",
       { method: "POST", body: { baseUrl } },
     ),
-  jellyfinSetup: (baseUrl: string) =>
+  setupJellyfin: (baseUrl: string) =>
     request<{ ok: boolean; serverName?: string; version?: string }>(
-      "/api/auth/jellyfin",
+      "/api/setup/jellyfin",
       { method: "POST", body: { baseUrl } },
     ),
+  setupComplete: () =>
+    request<{ ok: boolean; user: User }>("/api/setup/complete", {
+      method: "POST",
+    }),
   /** Connection test for the Settings → Jellyfin section (admin). */
   jellyfinTestSaved: (baseUrl: string) =>
     request<{ ok: boolean; serverName?: string; version?: string }>(
@@ -153,13 +180,7 @@ export const api = {
       dirs: { name: string; path: string }[];
     }>(`/api/fs/list${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   analyze: (path: string) =>
-    request<{
-      sourcePath: string;
-      dropName: string;
-      analysis: FolderAnalysis;
-      totalBytes: number;
-      skipped: string[];
-    }>("/api/analyze", { method: "POST", body: { path } }),
+    request<AnalyzeResponse>("/api/analyze", { method: "POST", body: { path } }),
 
   // Import
   /** Advisory check: can the category's instance see the drop once staged? */
@@ -167,19 +188,14 @@ export const api = {
     request<StagingCheckResponse>(
       `/api/import/check?categoryId=${encodeURIComponent(categoryId)}&sourcePath=${encodeURIComponent(sourcePath)}`,
     ),
-  startImport: (body: {
-    sourcePath: string;
-    categoryId: string;
-    match: {
-      tvdbId?: number;
-      tmdbId?: number;
-      title: string;
-      year?: number;
-      extra?: Record<string, unknown>;
-    };
-    seasons?: number[];
-    importMode: "move" | "copy";
-  }) => request<{ jobId: string }>("/api/import", { method: "POST", body }),
+  startImport: (body: ImportRequestBody) =>
+    request<{ jobId: string }>("/api/import", { method: "POST", body }),
+  /** Fan-out import: one pipeline (job) per item, run sequentially server-side. */
+  startImportBatch: (body: { items: ImportRequestBody[] }) =>
+    request<{ jobs: { jobId: string }[] }>("/api/import/batch", {
+      method: "POST",
+      body,
+    }),
   job: (id: string) =>
     request<{ id: string; events: JobEvent[]; finished: boolean }>(
       `/api/jobs/${id}`,
@@ -231,6 +247,40 @@ export interface CleanupStatus {
   running: boolean;
   intervalMs: number;
   lastResult?: SweepResult;
+}
+
+export interface AnalyzeResponse {
+  sourcePath: string;
+  dropName: string;
+  /** Whole-drop analysis (the single-item heuristics). */
+  analysis: FolderAnalysis;
+  /**
+   * Reviewable items: one per movie when the drop fanned out, else a single
+   * item. Each carries the absolute path to import from.
+   */
+  items: (FolderAnalysisItem & { sourcePath: string })[];
+  totalBytes: number;
+  skipped: string[];
+}
+
+export interface ImportRequestBody {
+  sourcePath: string;
+  categoryId: string;
+  match: {
+    tvdbId?: number;
+    tmdbId?: number;
+    title: string;
+    year?: number;
+    extra?: Record<string, unknown>;
+  };
+  seasons?: number[];
+  importMode: "move" | "copy";
+  /**
+   * Optional subset of the drop's media files (relative to sourcePath) to
+   * stage and import. Fanned-out items pass this for files that sit loose at
+   * a shared drop root; whole-drop imports omit it.
+   */
+  files?: string[];
 }
 
 export interface JobEvent {

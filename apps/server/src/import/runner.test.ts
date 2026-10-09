@@ -55,7 +55,12 @@ describe("runImport (mock Sonarr)", () => {
         }
         if (url === "/api/v3/series" && req.method === "POST") {
           return res.end(
-            JSON.stringify({ id: 7, title: body.title, tvdbId: body.tvdbId }),
+            JSON.stringify({
+              id: 7,
+              title: body.title,
+              tvdbId: body.tvdbId,
+              titleSlug: "breaking-bad",
+            }),
           );
         }
         if (url.startsWith("/api/v3/episode")) {
@@ -257,12 +262,20 @@ describe("runImport (mock Sonarr)", () => {
     );
     expect(staged.length).toBe(64);
 
-    // History recorded as partial (one file rejected).
+    // History recorded as partial (one file rejected) with the link
+    // coordinates and rejection reasons persisted.
     const history = db.listHistory();
     expect(history).toHaveLength(1);
     expect(history[0].result).toBe("partial");
     expect(history[0].title).toBe("Breaking Bad");
     expect(history[0].matchedId).toBe(7);
+    expect(history[0].titleSlug).toBe("breaking-bad");
+    expect(history[0].rejectedFiles).toEqual([
+      {
+        path: expect.stringContaining("S01E02.1080p.WEB-DL.mkv"),
+        reasons: ["Sample"],
+      },
+    ]);
   });
 
   it("fails cleanly when the category does not exist", async () => {
@@ -367,5 +380,101 @@ describe("runImport (mock Sonarr)", () => {
       (await stat(join(stagingDir, "AllRejected Show"))).isDirectory(),
     ).toBe(true);
     expect(events.some((e) => e.phase === "cleanup")).toBe(false);
+
+    // The failed history entry still carries the link coordinates and the
+    // rejection reasons, so the UI can show them without the job log.
+    const history = db.listHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0].result).toBe("failed");
+    expect(history[0].matchedId).toBe(7);
+    expect(history[0].titleSlug).toBe("breaking-bad");
+    expect(history[0].rejectedFiles?.[0]?.reasons).toEqual(["Sample"]);
+  });
+
+  it("imports only the requested file subset of a drop", async () => {
+    const config = await ConfigStore.load(join(workDir, "config.json"));
+    const db = new Db(join(workDir, "droparr-subset.db"));
+    const jobs = new JobRegistry();
+    const events: JobEvent[] = [];
+    jobs.on("event", (e: JobEvent) => events.push(e));
+
+    const subsetSource = join(workDir, "incoming", "Subset Show");
+    await mkdir(subsetSource, { recursive: true });
+    for (const n of ["01", "02"]) {
+      await writeFile(
+        join(subsetSource, `S01E${n}.1080p.WEB-DL.mkv`),
+        Buffer.alloc(64, 1),
+      );
+    }
+
+    const callsBefore = calls.length;
+    jobs.create("job-subset");
+    await runImport(
+      { config, db, jobs },
+      "job-subset",
+      {
+        sourcePath: subsetSource,
+        categoryId: "tv",
+        match: {
+          tvdbId: 81189,
+          title: "Subset Show",
+          extra: { seasons: [{ seasonNumber: 1 }] },
+        },
+        seasons: [1],
+        importMode: "copy",
+        files: ["S01E01.1080p.WEB-DL.mkv"],
+      },
+    );
+
+    expect(events[events.length - 1].phase).toBe("done");
+    expect(events[events.length - 1].result?.importedFiles).toBe(1);
+
+    // Only the requested file went into the manual import command…
+    const cmd = calls
+      .slice(callsBefore)
+      .find((c) => c.url === "/api/v3/command" && c.method === "POST");
+    const cmdBody = cmd?.body as { files: { path: string }[] };
+    expect(cmdBody.files).toHaveLength(1);
+    expect(cmdBody.files[0].path).toContain("S01E01");
+
+    // …and only that file was staged.
+    const stagedDir = join(stagingDir, "Subset Show");
+    expect(
+      (await stat(join(stagedDir, "S01E01.1080p.WEB-DL.mkv"))).size,
+    ).toBe(64);
+    await expect(
+      stat(join(stagedDir, "S01E02.1080p.WEB-DL.mkv")),
+    ).rejects.toThrow();
+
+    // History records the subset, not the whole drop.
+    expect(db.listHistory()[0].files.map((f) => f.path)).toEqual([
+      "S01E01.1080p.WEB-DL.mkv",
+    ]);
+  });
+
+  it("fails cleanly when the requested subset matches no files", async () => {
+    const config = await ConfigStore.load(join(workDir, "config.json"));
+    const db = new Db(join(workDir, "droparr-subset-miss.db"));
+    const jobs = new JobRegistry();
+    const events: JobEvent[] = [];
+    jobs.on("event", (e: JobEvent) => events.push(e));
+
+    jobs.create("job-subset-miss");
+    await runImport(
+      { config, db, jobs },
+      "job-subset-miss",
+      {
+        sourcePath,
+        categoryId: "tv",
+        match: { tvdbId: 81189, title: "Breaking Bad" },
+        importMode: "copy",
+        files: ["Nope.mkv"],
+      },
+    );
+
+    expect(events[events.length - 1].phase).toBe("error");
+    expect(events[events.length - 1].error).toContain(
+      "None of the requested files",
+    );
   });
 });

@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import type {
   FileRef,
   HistoryEntry,
+  HistoryRejectedFile,
   InstanceKind,
   Upload,
   UploadState,
@@ -30,6 +31,13 @@ export interface AuthFailure {
   failures: number;
   windowStart: string;
   lockedUntil?: string;
+}
+
+/** First-run setup lock. `completedAt` is null until the wizard finishes. */
+export interface SetupState {
+  completedAt?: string;
+  adminUserId?: string;
+  createdAt: string;
 }
 
 export class Db {
@@ -105,7 +113,29 @@ export class Db {
         windowStart TEXT NOT NULL,
         lockedUntil TEXT
       );
+
+      CREATE TABLE IF NOT EXISTS setup (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        completedAt TEXT,
+        adminUserId TEXT,
+        createdAt TEXT NOT NULL
+      );
     `);
+
+    // Additive migrations for databases created before these columns existed
+    // (CREATE TABLE IF NOT EXISTS never alters an existing table).
+    this.ensureColumn("history", "titleSlug", "TEXT");
+    this.ensureColumn("history", "rejectedJson", "TEXT");
+  }
+
+  /** Add a column when an older database predates it (idempotent). */
+  private ensureColumn(table: string, column: string, type: string): void {
+    const columns = this.db
+      .prepare(`PRAGMA table_info(${table})`)
+      .all() as { name: string }[];
+    if (!columns.some((c) => c.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
   }
 
   // --- History ---
@@ -114,8 +144,8 @@ export class Db {
     this.db
       .prepare(
         `INSERT INTO history
-         (id, instanceId, kind, title, year, matchedId, filesJson, result, startedAt, completedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, instanceId, kind, title, year, matchedId, titleSlug, filesJson, rejectedJson, result, startedAt, completedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         entry.id,
@@ -124,7 +154,11 @@ export class Db {
         entry.title,
         entry.year ?? null,
         entry.matchedId ?? null,
+        entry.titleSlug ?? null,
         JSON.stringify(entry.files),
+        entry.rejectedFiles && entry.rejectedFiles.length > 0
+          ? JSON.stringify(entry.rejectedFiles)
+          : null,
         entry.result,
         entry.timestamps.started,
         entry.timestamps.completed ?? null,
@@ -416,6 +450,85 @@ export class Db {
   clearAuthFailure(key: string): void {
     this.db.prepare(`DELETE FROM auth_failures WHERE key = ?`).run(key);
   }
+
+  // --- First-run setup ---
+
+  getSetupState(): SetupState | undefined {
+    const row = this.db
+      .prepare(`SELECT * FROM setup WHERE id = 1`)
+      .get() as SetupRow | undefined;
+    return row
+      ? {
+          completedAt: row.completedAt ?? undefined,
+          adminUserId: row.adminUserId ?? undefined,
+          createdAt: row.createdAt,
+        }
+      : undefined;
+  }
+
+  isSetupComplete(): boolean {
+    const row = this.db
+      .prepare(`SELECT completedAt FROM setup WHERE id = 1`)
+      .get() as { completedAt: string | null } | undefined;
+    return !!row?.completedAt;
+  }
+
+  hasAdminUser(): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 AS ok FROM users WHERE role = 'admin' LIMIT 1`)
+      .get() as { ok: number } | undefined;
+    return !!row;
+  }
+
+  /**
+   * Create the single setup row on first boot. Installs that predate the
+   * wizard (an admin user and a Jellyfin URL already exist) are backfilled as
+   * complete so upgrading never reopens first-run setup; a fresh install
+   * starts with `completedAt = NULL`.
+   */
+  initializeSetupState(input: {
+    adminExists: boolean;
+    jellyfinConfigured: boolean;
+    at?: string;
+  }): SetupState {
+    const existing = this.getSetupState();
+    if (existing) return existing;
+
+    const at = input.at ?? new Date().toISOString();
+    const completedAt =
+      input.adminExists && input.jellyfinConfigured ? at : null;
+    this.db
+      .prepare(
+        `INSERT INTO setup (id, completedAt, adminUserId, createdAt)
+         VALUES (1, ?, NULL, ?)`,
+      )
+      .run(completedAt, at);
+    return {
+      completedAt: completedAt ?? undefined,
+      createdAt: at,
+    };
+  }
+
+  /**
+   * Mark setup complete and record the claiming admin. Returns false when it
+   * was already completed (two browsers racing the wizard's last step).
+   */
+  completeSetup(
+    adminUserId: string,
+    at: string = new Date().toISOString(),
+  ): boolean {
+    if (this.isSetupComplete()) return false;
+    this.db
+      .prepare(
+        `INSERT INTO setup (id, completedAt, adminUserId, createdAt)
+         VALUES (1, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           completedAt = excluded.completedAt,
+           adminUserId = excluded.adminUserId`,
+      )
+      .run(at, adminUserId, at);
+    return true;
+  }
 }
 
 interface HistoryRow {
@@ -425,7 +538,9 @@ interface HistoryRow {
   title: string;
   year: number | null;
   matchedId: number | null;
+  titleSlug: string | null;
   filesJson: string;
+  rejectedJson: string | null;
   result: string;
   startedAt: string;
   completedAt: string | null;
@@ -460,6 +575,13 @@ interface AuthFailureRow {
   lockedUntil: string | null;
 }
 
+interface SetupRow {
+  id: number;
+  completedAt: string | null;
+  adminUserId: string | null;
+  createdAt: string;
+}
+
 function rowToEntry(row: HistoryRow): HistoryEntry {
   return {
     id: row.id,
@@ -468,7 +590,11 @@ function rowToEntry(row: HistoryRow): HistoryEntry {
     title: row.title,
     year: row.year ?? undefined,
     matchedId: row.matchedId ?? undefined,
+    titleSlug: row.titleSlug ?? undefined,
     files: JSON.parse(row.filesJson) as FileRef[],
+    rejectedFiles: row.rejectedJson
+      ? (JSON.parse(row.rejectedJson) as HistoryRejectedFile[])
+      : undefined,
     result: row.result as HistoryEntry["result"],
     timestamps: {
       started: row.startedAt,

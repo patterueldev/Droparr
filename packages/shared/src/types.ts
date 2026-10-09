@@ -37,8 +37,24 @@ export interface AuthSession {
 }
 
 export interface AuthStatus {
-  /** True until a Jellyfin server URL has been configured (first run). */
+  /**
+   * True until the first-run setup wizard has completed (lock marker in
+   * SQLite, so deleting the config file does not reopen it).
+   */
   setupRequired: boolean;
+  authenticated: boolean;
+  user?: User;
+}
+
+/**
+ * Wizard state for `GET /api/setup/status`. Only served while setup is
+ * incomplete — the endpoint locks itself once the marker is set.
+ */
+export interface SetupStatus {
+  setupRequired: boolean;
+  /** A Jellyfin URL is already saved (wizard step 1 done). */
+  jellyfinConfigured: boolean;
+  jellyfinBaseUrl?: string;
   authenticated: boolean;
   user?: User;
 }
@@ -141,6 +157,19 @@ export interface FolderAnalysis {
   reasoning: string[];
 }
 
+/**
+ * One reviewable/importable item of a drop. A plain drop yields a single item
+ * (`subPath: ""`); a multi-movie drop fans out into one item per sibling
+ * movie folder. File paths stay relative to the drop root.
+ */
+export interface FolderAnalysisItem extends FolderAnalysis {
+  /**
+   * Path from the drop root to this item's folder (`"A (2001)"`), or `""`
+   * when the item's files sit at the drop root itself.
+   */
+  subPath: string;
+}
+
 export interface Submission {
   id: string;
   submitterId: string;
@@ -151,6 +180,12 @@ export interface Submission {
   updatedAt: string;
 }
 
+/** A staged file the *arr rejected during manual-import preflight. */
+export interface HistoryRejectedFile {
+  path: string;
+  reasons: string[];
+}
+
 export interface HistoryEntry {
   id: string;
   instanceId: string;
@@ -158,10 +193,18 @@ export interface HistoryEntry {
   title: string;
   year?: number;
   matchedId?: number;
+  /** Sonarr series slug — deep-link coordinate for `{baseUrl}/series/{titleSlug}`. */
+  titleSlug?: string;
   files: FileRef[];
+  /** Files rejected during preflight; absent when nothing was rejected. */
+  rejectedFiles?: HistoryRejectedFile[];
   result: "success" | "partial" | "failed";
   timestamps: {
     started: string;
     completed?: string;
   };
+  /** Response-only: instance name resolved from config when read. */
+  instanceName?: string;
+  /** Response-only: absolute *arr UI URL for the matched title. */
+  link?: string;
 }

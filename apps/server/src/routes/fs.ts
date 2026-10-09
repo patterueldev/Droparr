@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { readdir, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { analyzeFolder } from "@droparr/core";
+import { analyzeDrop } from "@droparr/core";
 import { walkMediaFiles } from "../fs/walk.js";
 
 /**
@@ -88,7 +88,7 @@ export function fsRoutes(
       if (walked.files.length === 0) {
         return reply.code(422).send({ error: "No media files found in this folder" });
       }
-      const analysis = analyzeFolder({
+      const drop = analyzeDrop({
         files: walked.files.map((f) => f.path),
         sizes: Object.fromEntries(walked.files.map((f) => [f.path, f.size])),
         dropName: basename(path),
@@ -96,7 +96,13 @@ export function fsRoutes(
       return {
         sourcePath: path,
         dropName: basename(path),
-        analysis,
+        analysis: drop.analysis,
+        // Reviewable items: one per movie when the drop fanned out; each
+        // carries the absolute path to import from.
+        items: drop.items.map((item) => ({
+          ...item,
+          sourcePath: item.subPath ? join(path, item.subPath) : path,
+        })),
         totalBytes: walked.totalBytes,
         skipped: walked.skipped,
       };

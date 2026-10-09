@@ -21,6 +21,7 @@ import { LoginThrottle } from "./auth/throttle.js";
 import { AuthEvents, type SessionRevokedEvent } from "./auth/events.js";
 import { authGuard } from "./auth/guard.js";
 import { authRoutes } from "./routes/auth.js";
+import { setupRoutes } from "./routes/setup.js";
 import { instanceRoutes } from "./routes/instances.js";
 import { categoryRoutes } from "./routes/categories.js";
 import { fsRoutes } from "./routes/fs.js";
@@ -63,6 +64,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
   const throttle = new LoginThrottle(db);
 
   db.pruneExpiredSessions(new Date().toISOString());
+  // First boot: create the setup lock. Installs that predate the wizard are
+  // backfilled as complete so upgrading never reopens first-run setup (#6).
+  db.initializeSetupState({
+    adminExists: db.hasAdminUser(),
+    jellyfinConfigured: !!config.get().jellyfin?.baseUrl,
+  });
 
   const app = Fastify({
     logger: opts.logger ?? { level: process.env.LOG_LEVEL ?? "info" },
@@ -103,10 +110,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
   await app.register(rateLimit, { global: false });
   await app.register(websocket);
 
-  authGuard(app, sessions);
+  authGuard(app, sessions, db);
 
   // API routes
   authRoutes(app, { config, db, sessions, throttle, authEvents });
+  setupRoutes(app, { config, db });
   instanceRoutes(app, config);
   categoryRoutes(app, config);
   fsRoutes(app, {
@@ -115,7 +123,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
     ],
   });
   importRoutes(app, { config, db, jobs });
-  historyRoutes(app, db);
+  historyRoutes(app, { db, config });
   settingsRoutes(app, config, dataDir, { cleanup });
   uploadRoutes(app, {
     db,

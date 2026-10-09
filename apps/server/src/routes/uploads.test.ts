@@ -563,7 +563,7 @@ describe("uploads behind the auth guard", () => {
 
     const boot = await built.app.inject({
       method: "POST",
-      url: "/api/auth/jellyfin",
+      url: "/api/setup/jellyfin",
       payload: { baseUrl: "http://jellyfin.local:8096" },
     });
     expect(boot.statusCode).toBe(200);
@@ -579,6 +579,13 @@ describe("uploads behind the auth guard", () => {
       ? String(rawCookie[0])
       : String(rawCookie);
     const cookie = setCookie.split(";")[0]!;
+
+    const complete = await built.app.inject({
+      method: "POST",
+      url: "/api/setup/complete",
+      headers: { cookie },
+    });
+    expect(complete.statusCode).toBe(200);
 
     const unauthenticated = await createUpload(built.app, {
       filename: "a.mkv",
