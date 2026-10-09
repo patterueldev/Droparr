@@ -4,11 +4,12 @@ import Fastify, {
 } from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
-import rateLimit from "@fastify/rate-limit";
+import rateLimit, { normalizeIP } from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { clientIp } from "./http/client-ip.js";
 import { ConfigStore } from "./config/store.js";
 import { Db } from "./db.js";
 import { JobRegistry } from "./jobs.js";
@@ -81,6 +82,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
   const app = Fastify({
     logger: opts.logger ?? { level: process.env.LOG_LEVEL ?? "info" },
     trustProxy: true,
+    // Keep request bodies far below Cloudflare's 100 MB proxy limit
+    // (Free/Pro) so the origin — not the edge — answers oversized requests
+    // with a JSON error (M2.4). Upload routes raise this per-route to one
+    // 32 MiB TUS chunk plus creation metadata.
+    bodyLimit: 1024 * 1024,
   });
 
   // Quarantine sweep: created here so routes/tests can use it; the timer is
@@ -129,8 +135,25 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
   }
   await app.register(cookie);
   // Per-route limits only (see the login route); no global default.
-  await app.register(rateLimit, { global: false });
+  // Key on the real visitor — `CF-Connecting-IP` behind the Cloudflare
+  // Tunnel, `req.ip` (trustProxy) elsewhere — so a spoofed
+  // `X-Forwarded-For` cannot buy extra login attempts (M2.4). normalizeIP
+  // keeps the default IPv6 /64 masking.
+  await app.register(rateLimit, {
+    global: false,
+    keyGenerator: (req) => normalizeIP(clientIp(req)),
+  });
   await app.register(websocket);
+
+  // API responses (auth status, config, upload offsets, submissions) are
+  // per-user and change constantly; nothing on /api may be cached in the
+  // browser or at the Cloudflare edge (M2.4).
+  app.addHook("onSend", async (req, reply, payload) => {
+    if (req.url.startsWith("/api")) {
+      reply.header("Cache-Control", "no-store");
+    }
+    return payload;
+  });
 
   authGuard(app, sessions, db);
 

@@ -288,6 +288,40 @@ describe("login", () => {
     );
   });
 
+  it("keys the login limit on CF-Connecting-IP, not a spoofed X-Forwarded-For", async () => {
+    await makeApp();
+    stubJellyfin(DEFAULT_CREDS);
+    await completeSetup();
+
+    // Cloudflare appends the visitor IP after any client-supplied
+    // X-Forwarded-For values, so rotating the chain (as an attacker would)
+    // must not buy extra attempts — the limiter keys on the CF header (M2.4).
+    let last: LightMyRequestResponse | undefined;
+    for (let i = 0; i < 21; i++) {
+      last = await login(`user-${i}`, "wrong", {
+        "cf-connecting-ip": "203.0.113.7",
+        "x-forwarded-for": `198.51.100.${i}, 203.0.113.7`,
+      });
+    }
+    expect(last!.statusCode).toBe(429);
+    expect(last!.json<{ error: string }>().error).toContain(
+      "Too many login attempts",
+    );
+  });
+
+  it("treats distinct CF-Connecting-IPs as distinct clients", async () => {
+    await makeApp();
+    stubJellyfin(DEFAULT_CREDS);
+    await completeSetup();
+
+    for (let i = 0; i < 25; i++) {
+      const res = await login(`user-${i}`, "wrong", {
+        "cf-connecting-ip": `203.0.113.${i}`,
+      });
+      expect(res.statusCode).toBe(401);
+    }
+  });
+
   it("stores only a hash of the session token", async () => {
     await makeApp();
     stubJellyfin(DEFAULT_CREDS);
@@ -359,6 +393,27 @@ describe("sessions and roles", () => {
       headers: { cookie: cookieA },
     });
     expect(stillValid.statusCode).toBe(200);
+  });
+
+  it("records the visitor IP from CF-Connecting-IP on the session", async () => {
+    await makeApp();
+    stubJellyfin(DEFAULT_CREDS);
+    await completeSetup();
+
+    const res = await login("admin", "hunter2", {
+      "cf-connecting-ip": "203.0.113.7",
+      // Client-supplied chain entry: must not beat the CF header.
+      "x-forwarded-for": "10.9.9.9",
+    });
+    expect(res.statusCode).toBe(200);
+
+    const list = await built!.app.inject({
+      method: "GET",
+      url: "/api/auth/sessions",
+      headers: { cookie: sessionCookie(res) },
+    });
+    const current = list.json<AuthSession[]>().find((s) => s.current)!;
+    expect(current.ip).toBe("203.0.113.7");
   });
 
   it("clears the cookie when revoking the current session", async () => {

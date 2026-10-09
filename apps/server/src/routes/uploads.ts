@@ -32,7 +32,12 @@ import type { UploadSettings } from "../uploads/settings.js";
 
 const TUS_VERSION = "1.0.0";
 const TUS_EXTENSIONS = "creation,termination";
-const CREATION_BODY_LIMIT = 64 * 1024;
+/**
+ * Ceiling for a creation POST body. Exported so the M2.4 invariant test can
+ * assert that one TUS chunk plus this metadata stays below Cloudflare's
+ * 100 MB proxy limit (the web uploader chunks at 32 MiB).
+ */
+export const CREATION_BODY_LIMIT = 64 * 1024;
 
 export interface UploadRouteDeps {
   db: Db;

@@ -34,6 +34,7 @@ Sonarr and Radarr both ship a "Library Import" feature, but it is per-instance o
 
 - [Product plan](docs/PLAN.md) — problem, scope, milestones, decision log
 - [Architecture](docs/ARCHITECTURE.md) — stack, pipeline, verified \*arr/Jellyfin API mechanics, Cloudflare Tunnel constraints
+- [Deployment](docs/DEPLOYMENT.md) — Docker next to the \*arrs, Cloudflare Tunnel, hardening checklist
 
 ## Development
 
@@ -61,6 +62,9 @@ docker compose up -d --build
 ```
 
 The server serves the built UI and the API on a single port (`3100`).
+Exposing it at a subdomain with Cloudflare Tunnel — plus the hardening
+checklist for cookies, rate limits and upload body limits — is covered in the
+[deployment guide](docs/DEPLOYMENT.md).
 
 Set `PUID`/`PGID` (default `1000:1000`) to the user that owns `./config` and
 that your \*arr stack runs as, so quarantine uploads, config writes and SQLite

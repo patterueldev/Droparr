@@ -279,6 +279,15 @@ Source of truth: `src/NzbDrone.Core/MediaFiles/**/Manual/ManualImportCommand.cs`
 
 Noted alternative: a DNS-only record bypasses the limit but exposes the origin IP — not recommended.
 
+Implemented (M2.4): `clientIp()` (`apps/server/src/http/client-ip.ts`) prefers
+the edge-set `CF-Connecting-IP` over the spoofable leftmost `X-Forwarded-For`
+that `trustProxy` resolves; it keys the login/setup rate limits and is recorded
+on sessions, so the Sessions page shows the visitor instead of cloudflared.
+Every `/api` response carries `Cache-Control: no-store` via an `onSend` hook,
+and the global body limit (1 MiB; one 32 MiB TUS chunk plus metadata on upload
+routes) stays far below the 100 MB edge limit, so oversized requests get
+Droparr's JSON 4xx. Walkthrough: [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ## Security model
 
 - Jellyfin login with rate limiting + lockout; sessions in SQLite; admin can revoke.

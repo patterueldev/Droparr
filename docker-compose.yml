@@ -22,8 +22,10 @@ services:
       # *arr request timeout in ms (default 30000) — raise for slow VPNs.
       # - DROPARR_ARR_TIMEOUT_MS=30000
     volumes:
-      # Droparr's own state (SQLite history).
+      # JSON config (instances, categories, settings).
       - ./config:/config
+      # Droparr's own state: SQLite (sessions, history, uploads) + quarantine.
+      - ./data:/data
       # Shared staging volume — the *arrs must be able to read this too,
       # and each instance needs a path mapping for it in Settings.
       - ./staging:/data/staging
