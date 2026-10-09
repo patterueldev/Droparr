@@ -28,7 +28,7 @@ Sonarr and Radarr both ship a "Library Import" feature, but it is per-instance o
 ## Roles
 
 - **Admin** — full configuration, approval queue, instant imports
-- **Submitter** — signs in with their Jellyfin account, drops files, tracks status; submissions wait in an approval queue (per-user "trusted" toggle available)
+- **Submitter** — signs in with their Jellyfin account, drops files, tracks status; submissions wait in an approval queue unless an admin marks the account **trusted**
 
 ## Documentation
 
@@ -79,8 +79,11 @@ except health/auth/setup is blocked.
 
 **After setup:** sign in with your Jellyfin account and configure instances,
 categories and the staging directory in **Settings**. Jellyfin admins become
-Droparr admins; other accounts can sign in and manage their own sessions, while
-submitter features arrive in M3. Droparr never stores Jellyfin passwords.
+Droparr admins automatically; the **Users** tab lets an admin promote or
+demote accounts, mark submitters **trusted** (skips the approval queue) and
+**block** them (signs the account out everywhere and refuses new logins).
+Other accounts can sign in and manage their own sessions; the submitter drop
+flow arrives in M3. Droparr never stores Jellyfin passwords.
 
 > Multi-arch note: images build on both `linux/arm64` (dev Mac) and
 > `linux/amd64` (home server). Use `docker buildx build --platform linux/amd64,linux/arm64`.
