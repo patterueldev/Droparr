@@ -9,7 +9,7 @@ Droparr is a self-hosted web app that takes an existing movie or series folder �
 - gives you a review screen to fix the match, pick seasons and monitoring
 - stages files and lets Sonarr/Radarr do a native **manual import** — renaming, quality detection and moving stay inside the \*arr, exactly like the built-in UI
 
-Optional extras: LLM-assisted matching for ugly filenames (off by default), and Jellyfin login with an admin approval queue for submissions from family and friends.
+Optional extras: LLM-assisted matching for ugly filenames (off by default), Jellyfin login with an admin approval queue for submissions from family and friends, and ntfy/Discord webhook notifications when a submission needs approval or an import finishes.
 
 > **Status:** early development — plan and architecture are locked; implementation starts at milestone M1. See [`docs/PLAN.md`](docs/PLAN.md).
 
@@ -69,7 +69,10 @@ mode of newly created files. Settings → **Uploads & disk** covers the
 quarantine directory, per-file and per-submission caps, the minimum free space
 kept on the volume (uploads are refused/aborted below it), and the retention
 window for abandoned and finished drops (default 7 days) with a manual
-"Run cleanup now" action.
+"Run cleanup now" action. Settings → **Notifications** optionally posts to an
+ntfy topic or Discord webhook when a new submission is waiting for approval,
+and when an import finishes or is rejected (off by default; delivery failures
+are only logged).
 
 **First run:** open the UI — a setup wizard asks for your Jellyfin URL, then a
 Jellyfin **admin** signs in and confirms; that account becomes the Droparr admin
