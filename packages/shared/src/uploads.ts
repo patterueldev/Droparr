@@ -26,6 +26,8 @@ export interface Upload {
   id: string;
   /** Groups the files of one browser drop (client-generated). */
   dropId: string;
+  /** Droparr user that created the upload; absent on legacy rows. */
+  userId?: string;
   /** Sanitized display name (basename). */
   filename: string;
   /** Sanitized path relative to the drop directory. */
@@ -54,6 +56,8 @@ export interface UploadEvent {
   action: "created" | "progress" | "completed" | "deleted";
   uploadId: string;
   dropId: string;
+  /** Owner of the upload; the WS handler scopes frames by this. */
+  userId?: string;
   filename: string;
   relPath: string;
   offset: number;
