@@ -131,17 +131,18 @@ export function importRoutes(
     },
   );
 
-  /** Replay of a job's events (for reconnects). */
+  /** Replay of a job's events (for reconnects). Owner or admin only. */
   app.get<{ Params: { id: string } }>("/api/jobs/:id", async (req, reply) => {
     const job = deps.jobs.get(req.params.id);
     if (!job) return reply.code(404).send({ error: "Job not found" });
-    // Submitters may replay only their own submission imports (M3.3).
+    // Submitters may replay only their own submission imports (M3.3). Other
+    // jobs answer 404 so their ids stay indistinguishable from unknown ones.
     if (
       req.auth &&
       req.auth.user.role !== "admin" &&
       job.ownerId !== req.auth.user.id
     ) {
-      return reply.code(403).send({ error: "Admin access required" });
+      return reply.code(404).send({ error: "Job not found" });
     }
     return job;
   });

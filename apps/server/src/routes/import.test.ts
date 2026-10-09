@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { User } from "@droparr/shared";
 import { ConfigStore } from "../config/store.js";
 import { Db } from "../db.js";
 import { JobRegistry } from "../jobs.js";
@@ -27,7 +28,11 @@ beforeEach(() => {
   vi.mocked(runImport).mockClear();
 });
 
-async function buildHarness(): Promise<{ app: FastifyInstance }> {
+async function buildHarness(): Promise<{
+  app: FastifyInstance;
+  jobs: JobRegistry;
+  setUser: (user: User) => void;
+}> {
   const tmp = await mkdtemp(join(tmpdir(), "droparr-import-"));
   const config = await ConfigStore.load(join(tmp, "config.json"));
   await config.addInstance({
@@ -51,12 +56,37 @@ async function buildHarness(): Promise<{ app: FastifyInstance }> {
   const db = new Db(join(tmp, "droparr.db"));
   const jobs = new JobRegistry();
   const app = Fastify();
+  // Routes here only inspect req.auth for `GET /api/jobs/:id`; the real app
+  // decorates it in the auth guard.
+  let currentUser: User | undefined;
+  app.decorateRequest("auth");
+  app.addHook("onRequest", async (req) => {
+    if (currentUser) {
+      req.auth = {
+        user: currentUser,
+        session: {
+          id: "test-session",
+          userId: currentUser.id,
+          tokenHash: "test-hash",
+          createdAt: new Date().toISOString(),
+          lastSeenAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      };
+    }
+  });
   importRoutes(app, { config, db, jobs });
   cleanups.push(async () => {
     await app.close();
     await rm(tmp, { recursive: true, force: true });
   });
-  return { app };
+  return {
+    app,
+    jobs,
+    setUser: (user) => {
+      currentUser = user;
+    },
+  };
 }
 
 describe("POST /api/import/batch", () => {
@@ -170,5 +200,51 @@ describe("POST /api/import", () => {
     expect((missing.json() as { error: string }).error).toBe(
       "Movie imports require match.tmdbId",
     );
+  });
+});
+
+function testUser(role: User["role"], id: string): User {
+  return {
+    id,
+    jellyfinUserId: `jf-${id}`,
+    name: id,
+    role,
+    trusted: false,
+    blocked: false,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+const ADMIN = testUser("admin", "user-admin");
+const OWNER = testUser("submitter", "user-owner");
+const OTHER = testUser("submitter", "user-other");
+
+describe("GET /api/jobs/:id", () => {
+  it("replays a job for its owner and hides other users' jobs", async () => {
+    const h = await buildHarness();
+    h.jobs.create("job-owner", OWNER.id);
+    h.jobs.create("job-admin");
+
+    h.setUser(OWNER);
+    expect(
+      (await h.app.inject({ url: "/api/jobs/job-owner" })).statusCode,
+    ).toBe(200);
+    // Not the owner — indistinguishable from an unknown job id.
+    expect(
+      (await h.app.inject({ url: "/api/jobs/job-admin" })).statusCode,
+    ).toBe(404);
+
+    h.setUser(OTHER);
+    expect(
+      (await h.app.inject({ url: "/api/jobs/job-owner" })).statusCode,
+    ).toBe(404);
+    expect(
+      (await h.app.inject({ url: "/api/jobs/job-missing" })).statusCode,
+    ).toBe(404);
+
+    h.setUser(ADMIN);
+    expect(
+      (await h.app.inject({ url: "/api/jobs/job-admin" })).statusCode,
+    ).toBe(200);
   });
 });
