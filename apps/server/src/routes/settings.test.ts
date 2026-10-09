@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConfigStore } from "../config/store.js";
 import { Db } from "../db.js";
 import { QuarantineCleanup } from "../uploads/cleanup.js";
@@ -17,6 +17,7 @@ afterEach(async () => {
   while (cleanups.length > 0) {
     await cleanups.pop()!();
   }
+  vi.unstubAllGlobals();
 });
 
 async function buildHarness(): Promise<{
@@ -126,5 +127,131 @@ describe("settings routes — uploads policy", () => {
       sweptDrops: 0,
     });
     expect(run.json().at).toBeTruthy();
+  });
+});
+
+describe("settings routes — notifications", () => {
+  it("round-trips the webhook config and stays off until set", async () => {
+    const h = await buildHarness();
+
+    const initial = await h.app.inject({ url: "/api/settings" });
+    expect(initial.json().notifications).toBeUndefined();
+
+    const on = await h.app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: {
+        notifications: {
+          enabled: true,
+          url: "https://ntfy.sh/droparr",
+          format: "ntfy",
+        },
+      },
+    });
+    expect(on.statusCode).toBe(200);
+    expect(on.json().notifications).toEqual({
+      enabled: true,
+      url: "https://ntfy.sh/droparr",
+      format: "ntfy",
+    });
+
+    // Disabling keeps the URL so it can be flipped back on without retyping.
+    const off = await h.app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: {
+        notifications: {
+          enabled: false,
+          url: "https://ntfy.sh/droparr",
+          format: "ntfy",
+        },
+      },
+    });
+    expect(off.json().notifications.enabled).toBe(false);
+
+    const reloaded = await h.app.inject({ url: "/api/settings" });
+    expect(reloaded.json().notifications).toEqual({
+      enabled: false,
+      url: "https://ntfy.sh/droparr",
+      format: "ntfy",
+    });
+  });
+
+  it("rejects malformed webhook configs", async () => {
+    const h = await buildHarness();
+    for (const notifications of [
+      { enabled: true, url: "not-a-url", format: "ntfy" },
+      { enabled: true, url: "https://ntfy.sh/t", format: "telegram" },
+      { enabled: true, url: "ftp://ntfy.sh/t", format: "ntfy" },
+    ]) {
+      const res = await h.app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        payload: { notifications },
+      });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+
+  it("sends a test notification through the transport", async () => {
+    const h = await buildHarness();
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        new Response(null, { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await h.app.inject({
+      method: "POST",
+      url: "/api/settings/notifications/test",
+      payload: { url: "https://ntfy.sh/droparr", format: "ntfy" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, format: "ntfy" });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://ntfy.sh/droparr");
+    const headers = fetchMock.mock.calls[0]?.[1]?.headers as Record<
+      string,
+      string
+    >;
+    expect(headers.Title).toBe("Droparr test notification");
+  });
+
+  it("answers 502 with the transport error when the webhook fails", async () => {
+    const h = await buildHarness();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async (_input: string | URL | Request, _init?: RequestInit) =>
+          new Response("bad token", { status: 401 }),
+      ),
+    );
+
+    const res = await h.app.inject({
+      method: "POST",
+      url: "/api/settings/notifications/test",
+      payload: { url: "https://discord.com/api/webhooks/1/x", format: "discord" },
+    });
+
+    expect(res.statusCode).toBe(502);
+    const body = res.json() as { ok: boolean; error: string };
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain("401");
+    expect(body.error).toContain("bad token");
+  });
+
+  it("rejects invalid test drafts before hitting the network", async () => {
+    const h = await buildHarness();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await h.app.inject({
+      method: "POST",
+      url: "/api/settings/notifications/test",
+      payload: { url: "nope", format: "ntfy" },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
