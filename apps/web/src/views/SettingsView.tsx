@@ -3,6 +3,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Category,
   Instance,
+  NotificationFormat,
+  NotificationSettings,
   StagingCheckIssue,
   UploadSettings,
 } from "@droparr/shared";
@@ -47,6 +49,10 @@ export default function SettingsView() {
       />
       <UploadsSection uploads={settings?.uploads} onSaved={refresh} />
       <JellyfinSection jellyfin={settings?.jellyfin} onSaved={refresh} />
+      <NotificationsSection
+        notifications={settings?.notifications}
+        onSaved={refresh}
+      />
       <InstancesSection instances={instances} onChanged={refresh} />
       <CategoriesSection
         categories={categories}
@@ -537,6 +543,171 @@ function JellyfinSection({
           className={`text-xs ${status.ok ? "text-emerald-400" : "text-red-400"}`}
         >
           {status.ok ? "✓" : "✗"} {status.text}
+        </p>
+      )}
+    </Section>
+  );
+}
+
+function NotificationsSection({
+  notifications,
+  onSaved,
+}: {
+  notifications?: NotificationSettings;
+  onSaved: () => void;
+}) {
+  const [enabled, setEnabled] = useState(notifications?.enabled ?? false);
+  const [format, setFormat] = useState<NotificationFormat>(
+    notifications?.format ?? "ntfy",
+  );
+  const [url, setUrl] = useState(notifications?.url ?? "");
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(
+    null,
+  );
+  const [testBusy, setTestBusy] = useState(false);
+  const [testStatus, setTestStatus] = useState<{
+    ok: boolean;
+    text: string;
+  } | null>(null);
+
+  // Keep in sync when loaded / saved elsewhere.
+  useEffect(() => {
+    if (dirty || !notifications) return;
+    setEnabled(notifications.enabled);
+    setFormat(notifications.format);
+    setUrl(notifications.url);
+  }, [dirty, notifications]);
+
+  const change = (fn: () => void) => {
+    fn();
+    setDirty(true);
+    setStatus(null);
+  };
+
+  const test = async () => {
+    setTestBusy(true);
+    setTestStatus(null);
+    try {
+      await api.notificationsTest({ url: url.trim(), format });
+      setTestStatus({ ok: true, text: "Test notification sent." });
+    } catch (err) {
+      setTestStatus({
+        ok: false,
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setTestBusy(false);
+    }
+  };
+
+  const save = async () => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      await api.updateSettings({
+        notifications: { enabled, url: url.trim(), format },
+      });
+      setStatus({ ok: true, text: "Saved" });
+      setDirty(false);
+      onSaved();
+      setTimeout(() => setStatus(null), 2000);
+    } catch (err) {
+      setStatus({
+        ok: false,
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const needsUrl = enabled && !url.trim();
+
+  return (
+    <Section
+      title="Notifications"
+      subtitle="Optional webhook that tells admins about new submissions and submitters when their import finishes or is rejected. Off by default; delivery failures are only logged and never affect an import."
+    >
+      <label className="flex w-fit items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => change(() => setEnabled(e.target.checked))}
+          className="h-4 w-4 accent-emerald-600"
+        />
+        Send notifications
+      </label>
+
+      <div className="grid sm:grid-cols-2 gap-3">
+        <Field label="Format">
+          <select
+            value={format}
+            onChange={(e) =>
+              change(() => setFormat(e.target.value as NotificationFormat))
+            }
+            className="input"
+          >
+            <option value="ntfy">ntfy</option>
+            <option value="discord">Discord webhook</option>
+          </select>
+        </Field>
+        <Field
+          label={format === "ntfy" ? "ntfy topic URL" : "Discord webhook URL"}
+        >
+          <input
+            value={url}
+            onChange={(e) => change(() => setUrl(e.target.value))}
+            placeholder={
+              format === "ntfy"
+                ? "https://ntfy.sh/my-droparr"
+                : "https://discord.com/api/webhooks/…"
+            }
+            className="input font-mono"
+          />
+        </Field>
+      </div>
+
+      <p className="text-xs text-zinc-500">
+        {format === "ntfy"
+          ? "Messages are POSTed to this topic; ntfy.sh and self-hosted servers both work."
+          : "Create one in Discord under Channel settings → Integrations → Webhooks."}
+      </p>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          onClick={test}
+          disabled={testBusy || !url.trim()}
+          className="rounded-md border border-zinc-600 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
+        >
+          {testBusy ? "Testing…" : "Test"}
+        </button>
+        <button
+          onClick={save}
+          disabled={busy || !dirty || needsUrl}
+          className="rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 px-4 py-2 text-sm font-medium"
+        >
+          {busy ? "Saving…" : "Save"}
+        </button>
+        {status && (
+          <p
+            className={`text-xs ${status.ok ? "text-emerald-400" : "text-red-400"}`}
+          >
+            {status.ok ? "✓" : "✗"} {status.text}
+          </p>
+        )}
+        {testStatus && (
+          <p
+            className={`text-xs ${testStatus.ok ? "text-emerald-400" : "text-red-400"}`}
+          >
+            {testStatus.ok ? "✓" : "✗"} {testStatus.text}
+          </p>
+        )}
+      </div>
+      {needsUrl && (
+        <p className="text-xs text-amber-400">
+          Set a webhook URL before enabling notifications.
         </p>
       )}
     </Section>
@@ -1237,7 +1408,7 @@ function BackupSection({ onChanged }: { onChanged: () => void }) {
   return (
     <Section
       title="Backup & migration"
-      subtitle="Export this configuration and import it on another Droparr — for example when moving from a test machine to your production server. The file contains API keys, so keep it private."
+      subtitle="Export this configuration and import it on another Droparr — for example when moving from a test machine to your production server. The file contains API keys and webhook URLs, so keep it private."
     >
       <div className="flex flex-wrap items-center gap-2">
         <button
