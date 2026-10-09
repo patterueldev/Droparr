@@ -8,6 +8,7 @@ import { SESSION_COOKIE, hashSessionToken, type SessionService } from "../auth/s
 import type { LoginThrottle } from "../auth/throttle.js";
 import type { AuthEvents } from "../auth/events.js";
 import { requireAuth } from "../auth/guard.js";
+import { clientIp } from "../http/client-ip.js";
 
 const loginSchema = z.object({
   username: z.string().min(1).max(256),
@@ -96,7 +97,8 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps): void {
 
       const { token } = sessions.create(user.id, {
         userAgent: req.headers["user-agent"],
-        ip: req.ip,
+        // Behind the Tunnel this is the visitor, not cloudflared (M2.4).
+        ip: clientIp(req),
       });
       sessions.setCookie(reply, token);
       return { user };
