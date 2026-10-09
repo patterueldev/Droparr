@@ -88,13 +88,15 @@ function Shell({ user }: { user: User }) {
   }, [tabs, tab]);
 
   // The server closes this socket and says so when the session is revoked.
-  useEffect(
-    () =>
-      connectSessionRevoked(() => {
-        void queryClient.invalidateQueries({ queryKey: ["auth"] });
-      }),
-    [queryClient],
-  );
+  // Only admins may open /api/ws today (M3.4 scopes events per user), so
+  // submitters skip the connection instead of triggering a 4403 close;
+  // their sessions still end via the 401 path when a request is made.
+  useEffect(() => {
+    if (user.role !== "admin") return;
+    return connectSessionRevoked(() => {
+      void queryClient.invalidateQueries({ queryKey: ["auth"] });
+    });
+  }, [user.role, queryClient]);
 
   const signOut = async () => {
     try {
