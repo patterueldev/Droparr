@@ -503,6 +503,32 @@ describe("admin queue", () => {
     expect(h.db.isDropProtected("reject-drop")).toBe(false);
   });
 
+  it("shows the rejection reason to the owner and hides the drop from others", async () => {
+    const h = await buildHarness();
+    await seedDrop(h, "note-drop", MOVIE_FILES);
+    h.setUser(SUBMITTER);
+    const created = (await createSubmission(h, "note-drop")).json() as Submission;
+    h.setUser(ADMIN);
+    await h.app.inject({
+      method: "POST",
+      url: `/api/submissions/${created.id}/reject`,
+      payload: { note: "Duplicate of an older drop" },
+    });
+
+    h.setUser(SUBMITTER);
+    const own = await h.app.inject({ url: `/api/submissions/${created.id}` });
+    expect(own.statusCode).toBe(200);
+    const body = own.json() as Submission;
+    expect(body.state).toBe("rejected");
+    expect(body.note).toBe("Duplicate of an older drop");
+
+    h.setUser(OTHER);
+    expect(
+      (await h.app.inject({ url: `/api/submissions/${created.id}` }))
+        .statusCode,
+    ).toBe(404);
+  });
+
   it("never approves or rejects while a decision is already running", async () => {
     const h = await buildHarness();
     await seedDrop(h, "racedrop", MOVIE_FILES);
