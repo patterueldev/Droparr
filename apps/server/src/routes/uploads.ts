@@ -78,6 +78,20 @@ function setTusHeaders(
   }
 }
 
+function isAdmin(req: FastifyRequest): boolean {
+  return req.auth?.user.role === "admin";
+}
+
+/**
+ * Uploads are scoped to their creator (M3.3): submitters may not probe,
+ * resume or delete someone else's files. Non-owner access reads as 404 so
+ * upload/drop ids cannot be enumerated.
+ */
+function canAccessUpload(req: FastifyRequest, upload: Upload): boolean {
+  if (isAdmin(req)) return true;
+  return req.auth !== undefined && upload.userId === req.auth.user.id;
+}
+
 /**
  * Bytes free on the quarantine volume. The probe fails open (returns
  * Infinity) when statfs cannot run — ENOSPC handling in the write path is
@@ -149,12 +163,31 @@ export function uploadRoutes(app: FastifyInstance, deps: UploadRouteDeps): void 
     return reply.code(204).send();
   });
 
+  /**
+   * Safe upload limits for any authenticated user — the submit view needs the
+   * caps but must not read the admin Settings payload.
+   */
+  app.get("/api/uploads/config", async (req, reply) => {
+    if (!req.auth) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    const settings = deps.getSettings();
+    return {
+      maxFileSizeBytes: settings.maxFileSizeBytes,
+      maxSubmissionSizeBytes: settings.maxSubmissionSizeBytes,
+    };
+  });
+
   /** Creation: POST metadata, get a Location to PATCH chunks to. */
   app.post(
     "/api/uploads",
     { bodyLimit: maxChunk + CREATION_BODY_LIMIT },
     async (req, reply) => {
       if (!requireTus(req, reply)) return;
+      const user = req.auth?.user;
+      if (!user) {
+        return reply.code(401).send({ error: "Authentication required" });
+      }
       const settings = deps.getSettings();
 
       const lengthHeader = headerValue(req.headers["upload-length"]);
@@ -242,6 +275,7 @@ export function uploadRoutes(app: FastifyInstance, deps: UploadRouteDeps): void 
       const upload: Upload = {
         id,
         dropId,
+        userId: user.id,
         filename: basename(relPath),
         relPath,
         ext: extname(relPath),
@@ -256,6 +290,7 @@ export function uploadRoutes(app: FastifyInstance, deps: UploadRouteDeps): void 
         action: "created",
         uploadId: id,
         dropId,
+        userId: user.id,
         filename: upload.filename,
         relPath,
         offset: 0,
@@ -272,7 +307,11 @@ export function uploadRoutes(app: FastifyInstance, deps: UploadRouteDeps): void 
     "/api/uploads/:id",
     async (req, reply) => {
       const upload = deps.db.getUpload(req.params.id);
-      if (!upload || upload.state === "cancelled") {
+      if (
+        !upload ||
+        upload.state === "cancelled" ||
+        !canAccessUpload(req, upload)
+      ) {
         return reply.code(404).send({ error: "Upload not found" });
       }
       setTusHeaders(reply, {
@@ -310,7 +349,11 @@ export function uploadRoutes(app: FastifyInstance, deps: UploadRouteDeps): void 
       }
 
       const upload = deps.db.getUpload(req.params.id);
-      if (!upload || upload.state === "cancelled") {
+      if (
+        !upload ||
+        upload.state === "cancelled" ||
+        !canAccessUpload(req, upload)
+      ) {
         return reply.code(404).send({ error: "Upload not found" });
       }
       if (upload.state === "complete" || offset !== upload.offset) {
@@ -437,6 +480,7 @@ export function uploadRoutes(app: FastifyInstance, deps: UploadRouteDeps): void 
             action: state === "complete" ? "completed" : "progress",
             uploadId: upload.id,
             dropId: upload.dropId,
+            userId: upload.userId,
             filename: upload.filename,
             relPath: upload.relPath,
             offset: position,
@@ -487,7 +531,11 @@ export function uploadRoutes(app: FastifyInstance, deps: UploadRouteDeps): void 
     async (req, reply) => {
       if (!requireTus(req, reply)) return;
       const upload = deps.db.getUpload(req.params.id);
-      if (!upload || upload.state === "cancelled") {
+      if (
+        !upload ||
+        upload.state === "cancelled" ||
+        !canAccessUpload(req, upload)
+      ) {
         return reply.code(404).send({ error: "Upload not found" });
       }
       if (!deps.locks.acquire(upload.id)) {
@@ -514,13 +562,28 @@ export function uploadRoutes(app: FastifyInstance, deps: UploadRouteDeps): void 
   /** Droparr extension: list uploads of a drop + its analyze path once done. */
   app.get<{ Querystring: { dropId?: string; state?: string } }>(
     "/api/uploads",
-    async (req) => {
+    async (req, reply) => {
+      const user = req.auth?.user;
+      if (!user) {
+        return reply.code(401).send({ error: "Authentication required" });
+      }
       const dropId = sanitizeDropId(req.query.dropId);
       const state = (
         ["uploading", "complete", "cancelled"] as const
       ).includes(req.query.state as UploadState)
         ? (req.query.state as UploadState)
         : undefined;
+      // Submitters list only their own drops; admin keeps the global list.
+      if (!dropId && user.role !== "admin") {
+        return reply.code(400).send({ error: "dropId is required" });
+      }
+      if (
+        dropId &&
+        user.role !== "admin" &&
+        !deps.db.dropOwnedBy(dropId, user.id)
+      ) {
+        return reply.code(404).send({ error: "Drop not found" });
+      }
       const uploads = deps.db.listUploads({ dropId, state });
 
       let completePath: string | undefined;

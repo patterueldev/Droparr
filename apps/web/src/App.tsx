@@ -3,12 +3,14 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { User } from "@droparr/shared";
 import { api, connectSessionRevoked } from "./api";
 import ImportView from "./views/ImportView";
+import QueueView from "./views/QueueView";
+import SubmitView from "./views/SubmitView";
 import HistoryView from "./views/HistoryView";
 import SettingsView from "./views/SettingsView";
 import LoginView from "./views/LoginView";
 import SetupView from "./views/SetupView";
 
-type Tab = "import" | "history" | "settings";
+type Tab = "import" | "queue" | "history" | "settings" | "submit";
 
 export default function App() {
   const queryClient = useQueryClient();
@@ -76,7 +78,8 @@ export default function App() {
 }
 
 function Shell({ user }: { user: User }) {
-  const [tab, setTab] = useState<Tab>("import");
+  const isAdmin = user.role === "admin";
+  const [tab, setTab] = useState<Tab>(isAdmin ? "import" : "submit");
   const queryClient = useQueryClient();
 
   // The server closes this socket and says so when the session is revoked.
@@ -98,6 +101,15 @@ function Shell({ user }: { user: User }) {
     void queryClient.invalidateQueries({ queryKey: ["auth"] });
   };
 
+  const tabs: [Tab, string][] = isAdmin
+    ? [
+        ["import", "Import"],
+        ["queue", "Queue"],
+        ["history", "History"],
+        ["settings", "Settings"],
+      ]
+    : [["submit", "Submit"]];
+
   return (
     <div className="min-h-screen">
       <header className="border-b border-zinc-800 bg-zinc-900/60 backdrop-blur sticky top-0 z-10">
@@ -111,13 +123,7 @@ function Shell({ user }: { user: User }) {
             </span>
           </div>
           <nav className="flex gap-1 ml-auto">
-            {(
-              [
-                ["import", "Import"],
-                ["history", "History"],
-                ["settings", "Settings"],
-              ] as [Tab, string][]
-            ).map(([id, label]) => (
+            {tabs.map(([id, label]) => (
               <button
                 key={id}
                 onClick={() => setTab(id)}
@@ -154,9 +160,13 @@ function Shell({ user }: { user: User }) {
         </div>
       </header>
       <main className="mx-auto max-w-5xl px-4 py-6">
-        {tab === "import" && <ImportView onOpenSettings={() => setTab("settings")} />}
-        {tab === "history" && <HistoryView />}
-        {tab === "settings" && <SettingsView />}
+        {tab === "import" && isAdmin && (
+          <ImportView onOpenSettings={() => setTab("settings")} />
+        )}
+        {tab === "queue" && isAdmin && <QueueView />}
+        {tab === "history" && isAdmin && <HistoryView />}
+        {tab === "settings" && isAdmin && <SettingsView />}
+        {tab === "submit" && !isAdmin && <SubmitView />}
       </main>
     </div>
   );

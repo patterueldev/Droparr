@@ -41,8 +41,12 @@ Category  { id, name, kind, instanceId, rootFolder, qualityProfileId?,
 
 Submission { id, submitterId,
              state: "uploading" | "analyzing" | "pending" | "approved"
-                  | "importing" | "done" | "rejected",
-             files: FileRef[], analysis: FolderAnalysis }
+                  | "importing" | "done" | "failed" | "rejected",
+             dropId, dropName, sourcePath, items: SubmissionItem[],
+             importMode, note?, jobIds?, timestamps }
+
+SubmissionItem { subPath, sourcePath, analysis, title, year?,
+                 categoryId?, match?, seasons?, include }
 
 User      { id, jellyfinUserId, name, role: "admin" | "submitter",
             trusted: boolean, blocked: boolean }
@@ -111,7 +115,11 @@ Allowlist: video + subtitle extensions shared with the analyzer
 64 GiB / 256 GiB (`config.uploads`, `0` = unlimited). The quarantine directory
 defaults to `<dataDir>/quarantine`; when `DROPARR_BROWSE_ROOTS` is set it is
 added to the allowed browse roots automatically so `/api/analyze` can read
-completed drops.
+completed drops. Uploads are bound to their creator: HEAD/PATCH/DELETE answer
+404 for other users' uploads, submitters must list by `dropId`, and upload
+events are pushed only to the owner (legacy rows without an owner stay
+admin-only). `GET /api/uploads/config` exposes just the caps for the submit
+view.
 
 Disk guards & cleanup (M3.2): a `statfs` probe on the quarantine volume refuses
 new uploads with `507` when free space is below `uploads.minFreeSpaceBytes`
@@ -125,11 +133,38 @@ logic (it is a 5xx, so the retry predicate carves it out) so the user sees
 `uploading` rows whose last write is older than `uploads.retentionDays`
 (default 7, `0` keeps forever), drops whose files all completed before the
 window, and orphan directories with no DB rows (crash artifacts). Drops
-referenced by a live submission are protected via an `isDropProtected` hook
-(wired in M3.3); the same sweep primitives let a reject remove a drop
-immediately. Settings → Uploads & disk configures all of it and can trigger a
+referenced by a live submission are protected via the `isDropProtected` hook;
+rejecting a submission removes its drop immediately with the same primitives
+(`removeDrop`). Settings → Uploads & disk configures all of it and can trigger a
 sweep on demand (`GET /api/settings/disk`, `GET /api/settings/cleanup`,
 `POST /api/settings/cleanup/run`).
+
+## Approvals (M3.3)
+
+Uploads from submitters never touch the *arrs directly. Once the browser
+upload completes, the client asks the server to analyze the quarantined drop —
+the path is resolved from the drop id server-side, never from a client path —
+and shows a simplified confirm screen: detected title/year, the suggested
+match (a server-side lookup through the default category for the detected
+kind), seasons for series, and a scoped "search again".
+
+| Call | Purpose |
+| --- | --- |
+| `POST /api/submissions/analyze` | walk + heuristic analysis of an owned drop; an optional `term` re-runs the lookup and returns raw candidates |
+| `POST /api/submissions` | store the review; trusted users and admins run the pipeline immediately, everyone else lands `pending`; a second active submission for the same drop is refused (`409`) |
+| `GET /api/submissions` | admin: all (`?state=`); submitter: own only |
+| `GET /api/submissions/:id` | owner or admin |
+| `PATCH /api/submissions/:id` | admin inline edits while pending — items keyed by `subPath`, mutable fields: match, category, seasons, import mode |
+| `POST /api/submissions/:id/approve` | validate exactly like `POST /api/import/batch`, persist the edits, then one `runImport` job per included item; history entries carry `submissionId` |
+| `POST /api/submissions/:id/reject` | optional note, state `rejected`, `removeDrop()` deletes the quarantine drop immediately (the sweep catches leftovers) |
+
+State machine: `pending → approved → importing → done | failed` (or
+`rejected`). Partial success (≥ 1 item imported) settles as `done`; only a run
+where every pipeline errored is `failed`. Import jobs carry the submitter as
+`ownerId`, so their socket follows their own submissions without seeing admin
+imports; `type: "submission"` frames drive the queue and submitter lists live.
+Uploads are owner-scoped (see above) and a drop with an active submission is
+never swept.
 
 ## Verified \*arr API surface
 
@@ -167,7 +202,12 @@ Source of truth: `src/NzbDrone.Core/MediaFiles/**/Manual/ManualImportCommand.cs`
 - Sessions live server-side in SQLite: the `droparr_session` cookie holds a 256-bit random token, only its SHA-256 hash is persisted. Flags: `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` only on HTTPS (`secure: "auto"`) — the same code path works on LAN http and behind the Tunnel (M2.4).
 - Sliding 30-day expiry, touched at most hourly; expired sessions and sessions belonging to blocked users are dropped when used.
 - Login protection: 20 requests / 15 min per IP (`@fastify/rate-limit`) plus a per-username lockout after 5 failed credentials for 15 min (SQLite, survives restarts). Only Jellyfin 401/403 count as failures; outages return 502 without counting. Unknown users and wrong passwords get the same generic 401.
-- All `/api/*` routes require a session; non-auth routes are admin-only until M3 adds submitter routes. `/api/ws` closes unauthenticated upgrades with 4401, and revoking a session notifies + closes that browser's socket.
+- All `/api/*` routes require a session. Admin config routes stay admin-only;
+  submitters additionally reach `/api/uploads*` and `/api/submissions*` (with
+  per-route ownership/admin checks) and their own `/api/jobs/:id` replay.
+  `/api/ws` closes unauthenticated upgrades with 4401, scopes upload/job/
+  submission frames to the owner (admins see everything), and revoking a
+  session notifies + closes that browser's socket.
 - First-run setup wizard (M2.2): `GET /api/setup/status` and the `/api/setup/jellyfin[/test]` steps are open while setup is incomplete; the admin signs in through the regular login route, and `POST /api/setup/complete` requires an admin session and records the lock. The marker lives in the SQLite `setup` table, so deleting the config file never reopens the wizard. Until it is set, every `/api` route except health/auth/setup answers `409 { code: "setup_required" }`. Installs that predate the wizard backfill the marker on first boot when an admin exists and Jellyfin is configured. Settings → Jellyfin tests a URL via `GET /System/Info/Public` and lets admins change it.
 
 ## Cloudflare Tunnel constraints (engineering requirements)
@@ -186,7 +226,7 @@ Noted alternative: a DNS-only record bypasses the limit but exposes the origin I
 
 - Jellyfin login with rate limiting + lockout; sessions in SQLite; admin can revoke.
 - First-run setup is necessarily unauthenticated while it is open — on a fresh install, complete the wizard on the LAN before exposing the instance through the Tunnel.
-- Non-admin submissions are quarantined until approved; nothing reaches the \*arrs before approval.
+- Non-admin submissions are quarantined until approved; nothing reaches the \*arrs before approval. Submitters only ever see their own uploads, submissions and job events; admin config and filesystem browsing stay closed to them.
 - Upload allowlist (video + subtitle extensions), configurable size caps, free-space guards (10 GiB default) with clean mid-upload aborts, and an hourly quarantine sweep that removes abandoned/rejected drops after a configurable retention window (7 days default).
 - Path-traversal guards on all filesystem endpoints; API keys stored server-side, env-overridable, never logged.
 - Optional Cloudflare Access in front of admin routes for extra hardening.

@@ -16,6 +16,7 @@ import { QuarantineCleanup } from "./uploads/cleanup.js";
 import { UploadEventBus } from "./uploads/events.js";
 import { UploadLocks } from "./uploads/locks.js";
 import { resolveUploadSettings } from "./uploads/settings.js";
+import { SubmissionEventBus } from "./submissions/events.js";
 import { SessionService } from "./auth/sessions.js";
 import { LoginThrottle } from "./auth/throttle.js";
 import { AuthEvents, type SessionRevokedEvent } from "./auth/events.js";
@@ -28,6 +29,7 @@ import { fsRoutes } from "./routes/fs.js";
 import { importRoutes } from "./routes/import.js";
 import { historyRoutes } from "./routes/history.js";
 import { settingsRoutes } from "./routes/settings.js";
+import { submissionRoutes } from "./routes/submissions.js";
 import { uploadRoutes } from "./routes/uploads.js";
 
 export interface BuildAppOptions {
@@ -44,6 +46,7 @@ export interface BuiltApp {
   db: Db;
   jobs: JobRegistry;
   uploads: UploadEventBus;
+  submissions: SubmissionEventBus;
   uploadLocks: UploadLocks;
   cleanup: QuarantineCleanup;
   authEvents: AuthEvents;
@@ -58,6 +61,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
   const db = new Db(join(dataDir, "droparr.db"));
   const jobs = new JobRegistry();
   const uploads = new UploadEventBus();
+  const submissions = new SubmissionEventBus();
   const uploadLocks = new UploadLocks();
   const authEvents = new AuthEvents();
   const sessions = new SessionService(db);
@@ -83,6 +87,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
     events: uploads,
     locks: uploadLocks,
     getSettings: () => resolveUploadSettings(config.get(), dataDir),
+    // Drops referenced by a live submission (pending/approved/importing) are
+    // never swept — the submitter is still waiting on a decision (M3.3).
+    isDropProtected: (dropId) => db.isDropProtected(dropId),
     log: { warn: (obj, msg) => app.log.warn(obj, msg) },
   });
 
@@ -131,10 +138,21 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
     locks: uploadLocks,
     getSettings: () => resolveUploadSettings(config.get(), dataDir),
   });
+  submissionRoutes(app, {
+    config,
+    db,
+    jobs,
+    submissions,
+    uploads,
+    getSettings: () => resolveUploadSettings(config.get(), dataDir),
+    log: { warn: (obj, msg) => app.log.warn(obj, msg) },
+  });
 
-  // Live progress stream. Every job/upload event is broadcast; job clients
-  // filter by jobId, upload clients by dropId. `GET /api/jobs/:id` replays
-  // job events after a reconnect.
+  // Live progress stream. Every job/upload/submission event is broadcast;
+  // job clients filter by jobId, upload clients by dropId. `GET /api/jobs/:id`
+  // replays job events after a reconnect.
+  // Frames are scoped: admins see everything, submitters only their own
+  // uploads (event.userId) and submission imports (job owner).
   // Unauthenticated upgrades are closed with 4401; when the session behind a
   // socket is revoked the socket is told and closed immediately.
   app.get("/api/ws", { websocket: true }, (socket, req) => {
@@ -143,13 +161,27 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
       socket.close(4401, "Unauthorized");
       return;
     }
+    const isAdmin = resolved.user.role === "admin";
 
     const onJobEvent = (event: unknown) => {
+      const jobId = (event as { jobId?: string }).jobId;
+      if (!isAdmin && (!jobId || jobs.get(jobId)?.ownerId !== resolved.user.id)) {
+        return;
+      }
       if (socket.readyState === 1) {
         socket.send(JSON.stringify({ type: "job", ...(event as object) }));
       }
     };
     const onUploadEvent = (event: unknown) => {
+      const ownerId = (event as { userId?: string }).userId;
+      if (!isAdmin && ownerId !== resolved.user.id) return;
+      if (socket.readyState === 1) {
+        socket.send(JSON.stringify(event));
+      }
+    };
+    const onSubmissionEvent = (event: unknown) => {
+      const submitterId = (event as { submitterId?: string }).submitterId;
+      if (!isAdmin && submitterId !== resolved.user.id) return;
       if (socket.readyState === 1) {
         socket.send(JSON.stringify(event));
       }
@@ -164,10 +196,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
 
     jobs.on("event", onJobEvent);
     uploads.on("event", onUploadEvent);
+    submissions.on("event", onSubmissionEvent);
     authEvents.on("session-revoked", onRevoked);
     socket.on("close", () => {
       jobs.off("event", onJobEvent);
       uploads.off("event", onUploadEvent);
+      submissions.off("event", onSubmissionEvent);
       authEvents.off("session-revoked", onRevoked);
     });
   });
@@ -191,5 +225,5 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
     }
   }
 
-  return { app, config, db, jobs, uploads, uploadLocks, cleanup, authEvents };
+  return { app, config, db, jobs, uploads, submissions, uploadLocks, cleanup, authEvents };
 }
