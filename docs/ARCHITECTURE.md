@@ -167,6 +167,27 @@ imports; `type: "submission"` frames drive the queue and submitter lists live.
 Uploads are owner-scoped (see above) and a drop with an active submission is
 never swept.
 
+## Submission status (M3.4)
+
+Submitters get a **My drops** tab: their submissions newest-first with live
+state, plus a detail view that walks the lifecycle
+(`uploading → analyzing → pending → approved → importing → done | failed | rejected`)
+and shows the same live job widgets as the admin queue for an
+approved/importing/finished drop — staging progress, imported/rejected file
+results, and errors.
+
+Data comes from the owner-scoped submission list/detail; `type: "submission"`
+frames from `/api/ws` invalidate only that list, and an open detail replays
+`GET /api/jobs/:id` then streams `type: "job"` frames into it, so nothing
+polls. `uploading`/`analyzing` are pre-submission client phases of the drop
+wizard (no submission row exists before review) and render as completed
+timeline steps for stored rows. A rejected drop shows the admin's note
+(falling back to a generic message) in both the list and the detail.
+
+Ownership enforcement is the M3.3 model: submitters only ever fetch their own
+rows, and job replay answers `404` for jobs they do not own so their ids stay
+indistinguishable from unknown ones.
+
 ## Verified \*arr API surface
 
 ### Sonarr v4+ (`X-Api-Key` header, base `/api/v3`)
