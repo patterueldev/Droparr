@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   MatchSelection,
@@ -6,12 +6,11 @@ import type {
 } from "@droparr/shared";
 import {
   api,
-  connectSubmissionEvents,
   type SubmissionAnalyzeResponse,
   type SubmissionItemPatch,
 } from "../api";
 import UploadPanel from "./UploadPanel";
-import { AnalysisCard, StateBadge } from "./review";
+import { AnalysisCard } from "./review";
 
 type Phase = "upload" | "review" | "sent";
 
@@ -24,7 +23,11 @@ interface ReviewItem {
   seasons?: number[];
 }
 
-export default function SubmitView() {
+export default function SubmitView({
+  onOpenStatus,
+}: {
+  onOpenStatus: () => void;
+}) {
   const queryClient = useQueryClient();
   const [phase, setPhase] = useState<Phase>("upload");
   const [dropId, setDropId] = useState("");
@@ -45,19 +48,6 @@ export default function SubmitView() {
     queryKey: ["upload-config"],
     queryFn: api.uploadConfig,
   });
-  const { data: mySubmissions = [] } = useQuery({
-    queryKey: ["submissions"],
-    queryFn: () => api.submissions(),
-  });
-
-  // Live state: any of my submissions changing refreshes the list.
-  useEffect(
-    () =>
-      connectSubmissionEvents(() => {
-        void queryClient.invalidateQueries({ queryKey: ["submissions"] });
-      }),
-    [queryClient],
-  );
 
   const handleAnalyze = useCallback(async (_path: string, drop: string) => {
     setBusy(true);
@@ -310,49 +300,25 @@ export default function SubmitView() {
           </h2>
           <p className="text-sm text-zinc-300">
             {submitted.state === "pending"
-              ? `"${submitted.dropName}" is waiting for an admin to review it. The status below updates live.`
-              : `"${submitted.dropName}" is being imported — progress shows below.`}
+              ? `"${submitted.dropName}" is waiting for an admin to review it. Track it in My drops.`
+              : `"${submitted.dropName}" is being imported — watch the progress in My drops.`}
           </p>
-          <button
-            onClick={reset}
-            className="mt-2 rounded-md bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-sm font-medium"
-          >
-            Drop something else
-          </button>
+          <div className="flex flex-wrap items-center gap-3 pt-2">
+            <button
+              onClick={onOpenStatus}
+              className="rounded-md bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-sm font-medium"
+            >
+              View status →
+            </button>
+            <button
+              onClick={reset}
+              className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
+            >
+              Drop something else
+            </button>
+          </div>
         </div>
       )}
-
-      <div className="space-y-3">
-        <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wide">
-          My submissions
-        </h2>
-        {mySubmissions.length === 0 ? (
-          <p className="text-sm text-zinc-500">Nothing submitted yet.</p>
-        ) : (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 divide-y divide-zinc-800/70">
-            {mySubmissions.map((submission) => (
-              <div key={submission.id} className="px-4 py-3 space-y-1">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm truncate">
-                    {submission.dropName}
-                  </span>
-                  <StateBadge state={submission.state} />
-                </div>
-                <p className="text-xs text-zinc-500">
-                  {new Date(submission.createdAt).toLocaleString()}
-                  {submission.items.length > 1 &&
-                    ` · ${submission.items.length} items`}
-                </p>
-                {submission.state === "rejected" && submission.note && (
-                  <p className="text-xs text-red-400">
-                    Rejected: {submission.note}
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 }

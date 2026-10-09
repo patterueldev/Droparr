@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   FolderAnalysisItem,
@@ -7,9 +7,7 @@ import type {
 } from "@droparr/shared";
 import {
   api,
-  connectJobEvents,
   connectSubmissionEvents,
-  type JobEvent,
   type SubmissionItemPatch,
 } from "../api";
 import {
@@ -20,6 +18,7 @@ import {
   StateBadge,
   type BatchJobState,
 } from "./review";
+import { useJobProgress } from "./useJobProgress";
 
 /** Locally editable state of one queue item. */
 interface QueueItem {
@@ -217,55 +216,8 @@ function SubmissionDetail({
   );
 
   // Live job progress for an approved/importing (or finished) submission.
-  const jobIds = useMemo(
-    () => submission?.jobIds ?? [],
-    [submission?.jobIds],
-  );
-  const jobKey = jobIds.join(",");
-  const [jobStates, setJobStates] = useState<
-    Map<string, { events: JobEvent[]; final: JobEvent | null }>
-  >(new Map());
-
-  useEffect(() => {
-    if (jobIds.length === 0) return;
-    let cancelled = false;
-    for (const jobId of jobIds) {
-      void api
-        .job(jobId)
-        .then((state) => {
-          if (cancelled) return;
-          setJobStates((prev) =>
-            new Map(prev).set(jobId, {
-              events: state.events,
-              final:
-                state.events.find(
-                  (e) => e.phase === "done" || e.phase === "error",
-                ) ?? null,
-            }),
-          );
-        })
-        .catch(() => {
-          // Finished jobs are pruned from the in-memory registry; the
-          // submission state itself still tells the story.
-        });
-    }
-    const disconnect = connectJobEvents((e) => {
-      if (!jobIds.includes(e.jobId)) return;
-      setJobStates((prev) => {
-        const current = prev.get(e.jobId) ?? { events: [], final: null };
-        return new Map(prev).set(e.jobId, {
-          events: [...current.events, e],
-          final:
-            e.phase === "done" || e.phase === "error" ? e : current.final,
-        });
-      });
-    });
-    return () => {
-      cancelled = true;
-      disconnect();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobKey]);
+  const jobIds = submission?.jobIds ?? [];
+  const jobStates = useJobProgress(jobIds);
 
   const updateItem = (index: number, patch: Partial<QueueItem>) => {
     setItems(

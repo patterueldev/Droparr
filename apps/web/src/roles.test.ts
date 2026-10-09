@@ -12,9 +12,10 @@ describe("tabsForRole", () => {
     ]);
   });
 
-  it("shows submitters their submit view and account", () => {
+  it("shows submitters their submit view, status page and account", () => {
     expect(tabsForRole("submitter").map((tab) => tab.id)).toEqual([
       "submit",
+      "status",
       "account",
     ]);
   });

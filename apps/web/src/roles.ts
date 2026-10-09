@@ -7,12 +7,13 @@ export type Tab =
   | "users"
   | "settings"
   | "submit"
+  | "status"
   | "account";
 
 /**
  * Tabs each role can see. Admins get the full app (import, approval queue,
- * history, user management, settings); submitters get their submit view plus
- * their account.
+ * history, user management, settings); submitters get their submit view, the
+ * live submission status page, and their account.
  */
 export function tabsForRole(role: UserRole): { id: Tab; label: string }[] {
   if (role === "admin") {
@@ -26,6 +27,7 @@ export function tabsForRole(role: UserRole): { id: Tab; label: string }[] {
   }
   return [
     { id: "submit", label: "Submit" },
+    { id: "status", label: "My drops" },
     { id: "account", label: "Account" },
   ];
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FolderAnalysis, SubmissionState } from "@droparr/shared";
 import { api, formatBytes, type JobEvent } from "../api";
+import { timelineFor, type TimelineStepStatus } from "./timeline";
 
 /** Colored state chip for submissions (and job-backed views). */
 export function StateBadge({ state }: { state: SubmissionState }) {
@@ -20,6 +21,63 @@ export function StateBadge({ state }: { state: SubmissionState }) {
     >
       {state}
     </span>
+  );
+}
+
+/** Vertical lifecycle stepper for one submission (submitter status page). */
+export function SubmissionTimeline({ state }: { state: SubmissionState }) {
+  const steps = timelineFor(state);
+  return (
+    <ol>
+      {steps.map((step, i) => (
+        <li key={step.id} className="flex gap-3">
+          <div className="flex flex-col items-center">
+            <StepDot status={step.status} />
+            {i < steps.length - 1 && (
+              <span className="w-px flex-1 bg-zinc-800" />
+            )}
+          </div>
+          <span
+            className={`pb-3 pt-0.5 text-sm ${
+              step.status === "current"
+                ? "text-zinc-100"
+                : step.status === "failed"
+                  ? "text-red-400"
+                  : step.status === "done"
+                    ? "text-zinc-400"
+                    : "text-zinc-600"
+            }`}
+          >
+            {step.label}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function StepDot({ status }: { status: TimelineStepStatus }) {
+  if (status === "done") {
+    return (
+      <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-[10px] text-emerald-100">
+        ✓
+      </span>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-red-800 text-[10px] text-red-100">
+        ✕
+      </span>
+    );
+  }
+  if (status === "current") {
+    return (
+      <span className="mt-0.5 h-4 w-4 shrink-0 animate-pulse rounded-full border-2 border-emerald-500" />
+    );
+  }
+  return (
+    <span className="mt-0.5 h-4 w-4 shrink-0 rounded-full border border-zinc-700" />
   );
 }
 
@@ -288,7 +346,8 @@ export function ProgressStep({
 }: {
   events: JobEvent[];
   finalEvent: JobEvent | null;
-  onReset: () => void;
+  /** Omit for a read-only progress view (submitter status page). */
+  onReset?: () => void;
   resetLabel?: string;
 }) {
   const last = events[events.length - 1];
@@ -380,7 +439,7 @@ export function ProgressStep({
         ))}
       </div>
 
-      {(finalEvent || events.length > 0) && (
+      {onReset && (finalEvent || events.length > 0) && (
         <button
           onClick={onReset}
           className="rounded-md bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-sm font-medium"
@@ -399,7 +458,8 @@ export function BatchProgressStep({
   resetLabel = "Add another drop",
 }: {
   jobs: BatchJobState[];
-  onReset: () => void;
+  /** Omit for a read-only progress view (submitter status page). */
+  onReset?: () => void;
   resetLabel?: string;
 }) {
   const finished = jobs.filter((j) => j.final).length;
@@ -493,7 +553,7 @@ export function BatchProgressStep({
         })}
       </div>
 
-      {allDone && (
+      {onReset && allDone && (
         <button
           onClick={onReset}
           className="rounded-md bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-sm font-medium"

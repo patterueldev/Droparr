@@ -6,6 +6,7 @@ import { tabsForRole, type Tab } from "./roles";
 import ImportView from "./views/ImportView";
 import QueueView from "./views/QueueView";
 import SubmitView from "./views/SubmitView";
+import StatusView from "./views/StatusView";
 import HistoryView from "./views/HistoryView";
 import SettingsView from "./views/SettingsView";
 import UsersView from "./views/UsersView";
@@ -112,7 +113,7 @@ function Shell({ user }: { user: User }) {
   return (
     <div className="min-h-screen">
       <header className="border-b border-zinc-800 bg-zinc-900/60 backdrop-blur sticky top-0 z-10">
-        <div className="mx-auto max-w-5xl px-4 flex items-center gap-6 h-14">
+        <div className="mx-auto max-w-5xl px-4 py-2 sm:h-14 sm:py-0 flex flex-wrap sm:flex-nowrap items-center gap-x-4 gap-y-2 sm:gap-6">
           <div className="flex items-baseline gap-2">
             <span className="text-lg font-semibold tracking-tight">
               Drop<span className="text-emerald-400">arr</span>
@@ -136,7 +137,7 @@ function Shell({ user }: { user: User }) {
               </button>
             ))}
           </nav>
-          <div className="flex items-center gap-2 border-l border-zinc-800 pl-4">
+          <div className="flex w-full items-center justify-end gap-2 sm:w-auto sm:border-l sm:border-zinc-800 sm:pl-4">
             <span className="text-sm text-zinc-300 max-w-[10rem] truncate">
               {user.name}
             </span>
@@ -169,7 +170,8 @@ function Shell({ user }: { user: User }) {
         {tab === "history" && <HistoryView />}
         {tab === "users" && <UsersView currentUser={user} />}
         {tab === "settings" && <SettingsView />}
-        {tab === "submit" && <SubmitView />}
+        {tab === "submit" && <SubmitView onOpenStatus={() => setTab("status")} />}
+        {tab === "status" && <StatusView onOpenSubmit={() => setTab("submit")} />}
         {tab === "account" && <AccountView user={user} />}
       </main>
     </div>
