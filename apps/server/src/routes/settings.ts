@@ -1,11 +1,13 @@
 import type { FastifyInstance } from "fastify";
-import { stat } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { z } from "zod";
 import { JellyfinClient } from "@droparr/core";
 import { jellyfinBaseUrlSchema, uploadSettingsSchema } from "@droparr/shared";
 import type { ConfigStore } from "../config/store.js";
 import { buildExport, validateImport } from "../config/import.js";
 import { auditSettingsStaging } from "../staging/check.js";
+import { diskSpace } from "../uploads/disk.js";
+import type { QuarantineCleanup } from "../uploads/cleanup.js";
 import { resolveUploadSettings } from "../uploads/settings.js";
 
 const settingsSchema = z.object({
@@ -19,10 +21,16 @@ const settingsSchema = z.object({
     .optional(),
 });
 
+export interface SettingsRouteDeps {
+  /** Quarantine sweep scheduler (status + manual trigger). */
+  cleanup: QuarantineCleanup;
+}
+
 export function settingsRoutes(
   app: FastifyInstance,
   config: ConfigStore,
   dataDir: string,
+  deps: SettingsRouteDeps,
 ): void {
   // Return the upload policy with defaults resolved so the client can
   // pre-flight file sizes and show the quarantine location.
@@ -70,6 +78,42 @@ export function settingsRoutes(
   app.get("/api/settings/staging-check", async () =>
     auditSettingsStaging(config.get()),
   );
+
+  /**
+   * Free/total bytes on the quarantine volume for Settings → Uploads, plus
+   * whether the configured headroom is currently met.
+   */
+  app.get("/api/settings/disk", async (_req, reply) => {
+    const settings = resolveUploadSettings(config.get(), dataDir);
+    try {
+      await mkdir(settings.quarantineDir, { recursive: true });
+      const { freeBytes, totalBytes } = await diskSpace(settings.quarantineDir);
+      return {
+        quarantineDir: settings.quarantineDir,
+        freeBytes,
+        totalBytes,
+        minFreeSpaceBytes: settings.minFreeSpaceBytes,
+        belowThreshold:
+          settings.minFreeSpaceBytes > 0 &&
+          freeBytes < settings.minFreeSpaceBytes,
+      };
+    } catch (err) {
+      return reply.code(500).send({
+        error: `Cannot read disk space for ${settings.quarantineDir}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      });
+    }
+  });
+
+  /** Quarantine cleanup status for Settings → Uploads. */
+  app.get("/api/settings/cleanup", async () => ({
+    retentionDays: resolveUploadSettings(config.get(), dataDir).retentionDays,
+    ...deps.cleanup.status(),
+  }));
+
+  /** Run one sweep now (the "Run cleanup now" button). */
+  app.post("/api/settings/cleanup/run", async () => deps.cleanup.runNow());
 
   /**
    * Export the full configuration as a versioned JSON file.

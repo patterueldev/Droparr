@@ -91,6 +91,17 @@ export interface UploadSettings {
   maxFileSizeBytes?: number;
   /** Per-drop (submission) cap in bytes; 0 = unlimited. */
   maxSubmissionSizeBytes?: number;
+  /**
+   * Free-space headroom on the quarantine volume: new uploads are refused
+   * below this, running uploads are aborted and their partial file removed.
+   * 0 disables the guard.
+   */
+  minFreeSpaceBytes?: number;
+  /**
+   * Days a quarantine drop is kept after it finishes (or its last write for
+   * abandoned uploads) before the cleanup sweep deletes it. 0 = keep forever.
+   */
+  retentionDays?: number;
 }
 
 export interface DroparrConfig {

@@ -23,13 +23,21 @@ ENV NODE_ENV=production \
     DROPARR_DATA=/data \
     DROPARR_CONFIG=/config/config.json \
     DROPARR_WEB_DIST=/app/apps/web/dist
-RUN corepack enable
+# gosu lets the entrypoint drop root after fixing volume ownership.
+RUN corepack enable \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gosu \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 COPY --from=build /app ./
+COPY docker/entrypoint.sh /usr/local/bin/droparr-entrypoint.sh
+RUN chmod +x /usr/local/bin/droparr-entrypoint.sh
 
 EXPOSE 3100
 VOLUME ["/data", "/config"]
 
-# Runs the Fastify server (serving the built web UI + API).
+# Starts via the entrypoint (PUID/PGID/UMASK handling) which then runs the
+# Fastify server (serving the built web UI + API).
+ENTRYPOINT ["/usr/local/bin/droparr-entrypoint.sh"]
 CMD ["pnpm", "--filter", "@droparr/server", "start"]

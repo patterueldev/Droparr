@@ -18,6 +18,8 @@ interface HarnessOptions {
   maxFileBytes?: number;
   maxSubmissionBytes?: number;
   maxChunk?: number;
+  minFreeBytes?: number;
+  freeBytes?: () => Promise<number>;
 }
 
 interface Harness {
@@ -48,6 +50,8 @@ async function buildHarness(
     quarantineDir,
     maxFileSizeBytes: opts.maxFileBytes ?? 1_000_000,
     maxSubmissionSizeBytes: opts.maxSubmissionBytes ?? 2_000_000,
+    minFreeSpaceBytes: opts.minFreeBytes ?? 0,
+    retentionDays: 7,
   };
   const db = new Db(join(tmp, "droparr.db"));
   const events = new UploadEventBus();
@@ -61,6 +65,8 @@ async function buildHarness(
     locks,
     getSettings: () => settings,
     maxChunkSizeBytes: opts.maxChunk ?? 4096,
+    // Deterministic disk probe; guard tests override it to simulate a fill.
+    freeBytes: opts.freeBytes ?? (async () => 100 * 1024 ** 3),
   });
   cleanups.push(async () => {
     await app.close();
@@ -191,6 +197,26 @@ describe("upload creation", () => {
     });
     expect(second.statusCode).toBe(413);
     expect(second.json().error).toMatch(/per-drop/i);
+  });
+
+  it("refuses new uploads when the volume is below the free-space floor", async () => {
+    const h = await buildHarness({
+      minFreeBytes: 1000,
+      freeBytes: async () => 999,
+    });
+    const res = await createUpload(h.app, { filename: "a.mkv", size: 10 });
+    expect(res.statusCode).toBe(507);
+    expect(res.json().error).toMatch(/free space/i);
+    expect(h.db.listUploads()).toHaveLength(0);
+  });
+
+  it("allows uploads when the free space exactly meets the floor", async () => {
+    const h = await buildHarness({
+      minFreeBytes: 1000,
+      freeBytes: async () => 1000,
+    });
+    const res = await createUpload(h.app, { filename: "a.mkv", size: 10 });
+    expect(res.statusCode).toBe(201);
   });
 
   it("rejects duplicate relative paths in the same drop", async () => {
@@ -351,6 +377,36 @@ describe("chunked upload", () => {
     const finished = await inFlight;
     expect(finished.statusCode).toBe(204);
     expect(finished.headers["upload-offset"]).toBe("10");
+  });
+
+  it("aborts mid-upload and removes the partial file when the volume fills up", async () => {
+    let free = 10_000;
+    const h = await buildHarness({
+      minFreeBytes: 5000,
+      freeBytes: async () => free,
+    });
+    const content = pattern(2000);
+    const created = await createUpload(h.app, {
+      filename: "a.mkv",
+      size: content.length,
+      dropId: "filldrop",
+    });
+    const id = (created.json() as { upload: { id: string } }).upload.id;
+
+    const first = await patchUpload(h.app, id, 0, content.subarray(0, 1000));
+    expect(first.statusCode).toBe(204);
+
+    // The volume drops below the floor before the next chunk arrives.
+    free = 100;
+    const second = await patchUpload(h.app, id, 1000, content.subarray(1000));
+    expect(second.statusCode).toBe(507);
+    expect(second.json().error).toMatch(/free space/i);
+
+    // Clean abort: row gone, partial file removed, clients notified.
+    expect(h.db.getUpload(id)).toBeUndefined();
+    await expect(stat(join(h.quarantineDir, "filldrop", "a.mkv"))).rejects.toThrow();
+    expect(h.received.some((e) => e.action === "deleted")).toBe(true);
+    expect(h.locks.isHeld(id)).toBe(false);
   });
 
   it("resumes at the committed offset after a server restart", async () => {

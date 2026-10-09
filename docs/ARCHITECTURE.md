@@ -28,7 +28,7 @@ Design principle: **Droparr never re-implements renaming, quality detection, or 
   - `packages/shared` — zod schemas + shared types
 - **Storage**: JSON config file (v1) + SQLite (sessions, submissions, history)
 - **Realtime**: WebSocket for upload/import progress (works reliably through Cloudflare Tunnel)
-- **Packaging**: single Docker image + `docker-compose.yml` example; runs alongside the \*arrs with a shared staging volume
+- **Packaging**: single Docker image + `docker-compose.yml` example; runs alongside the \*arrs with a shared staging volume. The entrypoint supports `PUID`/`PGID`/`UMASK` so uploads, config and SQLite writes match the \*arr stack's ownership.
 
 ## Data model (v1)
 
@@ -92,9 +92,9 @@ lengths).
 | Call | Purpose |
 | --- | --- |
 | `OPTIONS /api/uploads` | capabilities: `Tus-Version`, `Tus-Extension: creation,termination`, `Tus-Max-Size` (per-file cap) |
-| `POST /api/uploads` | create with `Upload-Length` + `Upload-Metadata` (`filename`, `filetype`, `relpath`, `dropid`) → `201` + `Location` |
+| `POST /api/uploads` | create with `Upload-Length` + `Upload-Metadata` (`filename`, `filetype`, `relpath`, `dropid`) → `201` + `Location`; `507` when the quarantine volume is below the free-space floor |
 | `HEAD /api/uploads/:id` | resume probe → `Upload-Offset` / `Upload-Length`, `Cache-Control: no-store` |
-| `PATCH /api/uploads/:id` | append a chunk at `Upload-Offset` (`application/offset+octet-stream`) → `204` + new offset; `409` on offset mismatch, `423` while another write holds the upload, `413` over the chunk/size caps |
+| `PATCH /api/uploads/:id` | append a chunk at `Upload-Offset` (`application/offset+octet-stream`) → `204` + new offset; `409` on offset mismatch, `423` while another write holds the upload, `413` over the chunk/size caps, `507` at/below the free-space floor (the partial file is removed) |
 | `DELETE /api/uploads/:id` | cancel + remove the partial file |
 | `GET /api/uploads?dropId=…` | Droparr extension: files of a drop + `completePath` once every file is done |
 
@@ -112,6 +112,24 @@ Allowlist: video + subtitle extensions shared with the analyzer
 defaults to `<dataDir>/quarantine`; when `DROPARR_BROWSE_ROOTS` is set it is
 added to the allowed browse roots automatically so `/api/analyze` can read
 completed drops.
+
+Disk guards & cleanup (M3.2): a `statfs` probe on the quarantine volume refuses
+new uploads with `507` when free space is below `uploads.minFreeSpaceBytes`
+(default 10 GiB, `0` disables the guard). A running PATCH that crosses the
+floor — or hits a real `ENOSPC`/`EDQUOT` — aborts cleanly: the uncommitted tail
+is rolled back, the partial file and its DB row are removed, a `deleted` event
+goes out, and `507` is deliberately excluded from the web uploader's tus retry
+logic (it is a 5xx, so the retry predicate carves it out) so the user sees
+"storage is full" instead of a retry-into-404 loop. An in-process scheduler
+(`QuarantineCleanup`) sweeps ~1 min after boot and hourly: abandoned
+`uploading` rows whose last write is older than `uploads.retentionDays`
+(default 7, `0` keeps forever), drops whose files all completed before the
+window, and orphan directories with no DB rows (crash artifacts). Drops
+referenced by a live submission are protected via an `isDropProtected` hook
+(wired in M3.3); the same sweep primitives let a reject remove a drop
+immediately. Settings → Uploads & disk configures all of it and can trigger a
+sweep on demand (`GET /api/settings/disk`, `GET /api/settings/cleanup`,
+`POST /api/settings/cleanup/run`).
 
 ## Verified \*arr API surface
 
@@ -169,7 +187,7 @@ Noted alternative: a DNS-only record bypasses the limit but exposes the origin I
 - Jellyfin login with rate limiting + lockout; sessions in SQLite; admin can revoke.
 - First-run setup is necessarily unauthenticated while it is open — on a fresh install, complete the wizard on the LAN before exposing the instance through the Tunnel.
 - Non-admin submissions are quarantined until approved; nothing reaches the \*arrs before approval.
-- Upload allowlist (video + subtitle extensions), configurable size caps, free-space guards, rejected-upload cleanup (default 7 days).
+- Upload allowlist (video + subtitle extensions), configurable size caps, free-space guards (10 GiB default) with clean mid-upload aborts, and an hourly quarantine sweep that removes abandoned/rejected drops after a configurable retention window (7 days default).
 - Path-traversal guards on all filesystem endpoints; API keys stored server-side, env-overridable, never logged.
 - Optional Cloudflare Access in front of admin routes for extra hardening.
 

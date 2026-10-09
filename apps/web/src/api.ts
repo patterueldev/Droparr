@@ -112,6 +112,13 @@ export const api = {
   /** Advisory staging-visibility audit for the Settings page. */
   settingsStagingCheck: () =>
     request<StagingCheckResponse>("/api/settings/staging-check"),
+  /** Free/total bytes on the quarantine volume (Settings → Uploads). */
+  diskStatus: () => request<DiskStatus>("/api/settings/disk"),
+  /** Quarantine sweep status + last result (Settings → Uploads). */
+  cleanupStatus: () => request<CleanupStatus>("/api/settings/cleanup"),
+  /** Run one quarantine sweep now. */
+  runCleanup: () =>
+    request<SweepResult>("/api/settings/cleanup/run", { method: "POST" }),
   exportSettings: () =>
     request<{
       app: "droparr";
@@ -210,6 +217,36 @@ export interface StagingCheckResponse {
   /** Planned drop dir as the target instance sees it (wizard only). */
   instanceDir?: string;
   issues: StagingCheckIssue[];
+}
+
+/** Quarantine volume state for Settings → Uploads. */
+export interface DiskStatus {
+  quarantineDir: string;
+  freeBytes: number;
+  totalBytes: number;
+  minFreeSpaceBytes: number;
+  belowThreshold: boolean;
+}
+
+/** One cleanup pass over the quarantine dir (mirrors the server result). */
+export interface SweepResult {
+  at: string;
+  retentionDays: number;
+  cutoff: string;
+  staleUploads: number;
+  sweptDrops: number;
+  orphanDirs: number;
+  freedBytes: number;
+  skippedLocked: number;
+  errors: string[];
+}
+
+export interface CleanupStatus {
+  retentionDays: number;
+  started: boolean;
+  running: boolean;
+  intervalMs: number;
+  lastResult?: SweepResult;
 }
 
 export interface AnalyzeResponse {

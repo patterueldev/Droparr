@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Category, Instance, StagingCheckIssue } from "@droparr/shared";
-import { api } from "../api";
+import type {
+  Category,
+  Instance,
+  StagingCheckIssue,
+  UploadSettings,
+} from "@droparr/shared";
+import { api, formatBytes, type SweepResult } from "../api";
+
+const GIB = 1024 ** 3;
 
 export default function SettingsView() {
   const queryClient = useQueryClient();
@@ -27,6 +34,8 @@ export default function SettingsView() {
     void queryClient.invalidateQueries({ queryKey: ["categories"] });
     void queryClient.invalidateQueries({ queryKey: ["settings"] });
     void queryClient.invalidateQueries({ queryKey: ["staging-check"] });
+    void queryClient.invalidateQueries({ queryKey: ["disk-status"] });
+    void queryClient.invalidateQueries({ queryKey: ["cleanup-status"] });
   };
 
   return (
@@ -36,6 +45,7 @@ export default function SettingsView() {
         issues={stagingCheck?.issues ?? []}
         onSaved={refresh}
       />
+      <UploadsSection uploads={settings?.uploads} onSaved={refresh} />
       <JellyfinSection jellyfin={settings?.jellyfin} onSaved={refresh} />
       <InstancesSection instances={instances} onChanged={refresh} />
       <CategoriesSection
@@ -136,6 +146,302 @@ function StagingSection({
           ))}
         </div>
       )}
+    </Section>
+  );
+}
+
+function toGiBString(bytes: number | undefined): string {
+  if (bytes === undefined) return "";
+  if (bytes === 0) return "0";
+  return String(Number((bytes / GIB).toFixed(2)));
+}
+
+function parseGiB(value: string): number | null {
+  const n = Number(value.trim());
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.round(n * GIB);
+}
+
+/** One-line description of a sweep result for the Settings UI. */
+function sweepSummary(r: SweepResult): string {
+  if (r.retentionDays <= 0) {
+    return "Cleanup is disabled (retention 0) — nothing was removed.";
+  }
+  const parts: string[] = [];
+  if (r.staleUploads > 0) parts.push(`${r.staleUploads} partial upload(s)`);
+  if (r.sweptDrops > 0) parts.push(`${r.sweptDrops} finished drop(s)`);
+  if (r.orphanDirs > 0) parts.push(`${r.orphanDirs} orphan folder(s)`);
+  if (parts.length === 0) return "Nothing to clean up.";
+  const freed = r.freedBytes > 0 ? ` — ${formatBytes(r.freedBytes)} freed` : "";
+  return `Removed ${parts.join(", ")}${freed}.`;
+}
+
+function UploadsSection({
+  uploads,
+  onSaved,
+}: {
+  uploads?: UploadSettings;
+  onSaved: () => void;
+}) {
+  const [quarantineDir, setQuarantineDir] = useState(
+    uploads?.quarantineDir ?? "",
+  );
+  const [maxFileGiB, setMaxFileGiB] = useState(
+    toGiBString(uploads?.maxFileSizeBytes),
+  );
+  const [maxSubmissionGiB, setMaxSubmissionGiB] = useState(
+    toGiBString(uploads?.maxSubmissionSizeBytes),
+  );
+  const [minFreeGiB, setMinFreeGiB] = useState(
+    toGiBString(uploads?.minFreeSpaceBytes),
+  );
+  const [retentionDays, setRetentionDays] = useState(
+    uploads?.retentionDays === undefined ? "" : String(uploads.retentionDays),
+  );
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(
+    null,
+  );
+  const [runBusy, setRunBusy] = useState(false);
+  const [runStatus, setRunStatus] = useState<{
+    ok: boolean;
+    text: string;
+  } | null>(null);
+
+  const { data: disk, refetch: refetchDisk } = useQuery({
+    queryKey: ["disk-status"],
+    queryFn: api.diskStatus,
+  });
+  const { data: cleanup, refetch: refetchCleanup } = useQuery({
+    queryKey: ["cleanup-status"],
+    queryFn: api.cleanupStatus,
+  });
+
+  // Keep in sync when loaded / saved elsewhere.
+  useEffect(() => {
+    if (dirty || !uploads) return;
+    setQuarantineDir(uploads.quarantineDir ?? "");
+    setMaxFileGiB(toGiBString(uploads.maxFileSizeBytes));
+    setMaxSubmissionGiB(toGiBString(uploads.maxSubmissionSizeBytes));
+    setMinFreeGiB(toGiBString(uploads.minFreeSpaceBytes));
+    setRetentionDays(
+      uploads.retentionDays === undefined ? "" : String(uploads.retentionDays),
+    );
+  }, [dirty, uploads]);
+
+  const save = async () => {
+    const maxFile = parseGiB(maxFileGiB);
+    const maxSubmission = parseGiB(maxSubmissionGiB);
+    const minFree = parseGiB(minFreeGiB);
+    const retention = Number(retentionDays.trim());
+    if (
+      maxFile === null ||
+      maxSubmission === null ||
+      minFree === null ||
+      retentionDays.trim() === "" ||
+      !Number.isInteger(retention) ||
+      retention < 0
+    ) {
+      setStatus({
+        ok: false,
+        text: "Sizes must be non-negative numbers (GiB); retention a whole number of days (0 = keep forever).",
+      });
+      return;
+    }
+    setBusy(true);
+    setStatus(null);
+    try {
+      const uploadsPatch: NonNullable<
+        Parameters<typeof api.updateSettings>[0]["uploads"]
+      > = {
+        maxFileSizeBytes: maxFile,
+        maxSubmissionSizeBytes: maxSubmission,
+        minFreeSpaceBytes: minFree,
+        retentionDays: retention,
+      };
+      // Only persist the quarantine dir when it was actually edited — the
+      // field is pre-filled with the resolved default, and freezing that
+      // machine-specific path into the config would break settings import
+      // on another host.
+      if (quarantineDir.trim() !== (uploads?.quarantineDir ?? "")) {
+        uploadsPatch.quarantineDir = quarantineDir.trim();
+      }
+      await api.updateSettings({ uploads: uploadsPatch });
+      setStatus({ ok: true, text: "Saved" });
+      setDirty(false);
+      onSaved();
+      setTimeout(() => setStatus(null), 2000);
+    } catch (err) {
+      setStatus({
+        ok: false,
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runCleanup = async () => {
+    setRunBusy(true);
+    setRunStatus(null);
+    try {
+      const result = await api.runCleanup();
+      setRunStatus({ ok: true, text: sweepSummary(result) });
+      void refetchCleanup();
+      void refetchDisk();
+    } catch (err) {
+      setRunStatus({
+        ok: false,
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setRunBusy(false);
+    }
+  };
+
+  const edit =
+    (setter: (value: string) => void) =>
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setter(e.target.value);
+      setDirty(true);
+    };
+
+  const last = cleanup?.lastResult;
+
+  return (
+    <Section
+      title="Uploads & disk"
+      subtitle="Where browser uploads land first, how much disk they may consume, and when abandoned or finished drops are cleaned up automatically."
+    >
+      <div className="grid sm:grid-cols-2 gap-3">
+        <Field label="Quarantine directory">
+          <input
+            value={quarantineDir}
+            onChange={edit(setQuarantineDir)}
+            placeholder="/data/quarantine"
+            className="input font-mono"
+          />
+        </Field>
+        <Field label="Retention (days, 0 = keep forever)">
+          <input
+            value={retentionDays}
+            onChange={edit(setRetentionDays)}
+            placeholder="7"
+            inputMode="numeric"
+            className="input"
+          />
+        </Field>
+        <Field label="Max file size (GiB, 0 = unlimited)">
+          <input
+            value={maxFileGiB}
+            onChange={edit(setMaxFileGiB)}
+            placeholder="64"
+            inputMode="decimal"
+            className="input"
+          />
+        </Field>
+        <Field label="Max submission size (GiB, 0 = unlimited)">
+          <input
+            value={maxSubmissionGiB}
+            onChange={edit(setMaxSubmissionGiB)}
+            placeholder="256"
+            inputMode="decimal"
+            className="input"
+          />
+        </Field>
+        <Field label="Minimum free space (GiB, 0 = guard off)">
+          <input
+            value={minFreeGiB}
+            onChange={edit(setMinFreeGiB)}
+            placeholder="10"
+            inputMode="decimal"
+            className="input"
+          />
+        </Field>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button
+          onClick={save}
+          disabled={busy || !dirty}
+          className="rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 px-4 py-2 text-sm font-medium"
+        >
+          {busy ? "Saving…" : "Save"}
+        </button>
+        {status && (
+          <p
+            className={`text-xs ${status.ok ? "text-emerald-400" : "text-red-400"}`}
+          >
+            {status.text}
+          </p>
+        )}
+      </div>
+
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 px-4 py-3 space-y-1">
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-zinc-400">Quarantine volume:</span>
+          {disk ? (
+            <span className="text-sm text-zinc-200">
+              {formatBytes(disk.freeBytes)} free of{" "}
+              {formatBytes(disk.totalBytes)}
+            </span>
+          ) : (
+            <span className="text-sm text-zinc-500">…</span>
+          )}
+          <button
+            onClick={() => void refetchDisk()}
+            className="ml-auto rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+          >
+            Refresh
+          </button>
+        </div>
+        {disk && (
+          <p className="text-xs text-zinc-500 font-mono truncate">
+            {disk.quarantineDir}
+          </p>
+        )}
+        {disk?.belowThreshold && (
+          <p className="text-xs text-amber-400">
+            ⚠ Below the {formatBytes(disk.minFreeSpaceBytes)} headroom — new
+            uploads are refused and running uploads are aborted until space is
+            freed.
+          </p>
+        )}
+      </div>
+
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 px-4 py-3 space-y-2">
+        <div className="flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm">
+              Cleanup sweep{cleanup?.started ? " · runs hourly" : ""}
+            </p>
+            <p className="text-xs text-zinc-500">
+              {last
+                ? `Last run ${formatWhen(last.at)}: ${sweepSummary(last)}${
+                    last.errors.length > 0
+                      ? ` ${last.errors.length} error(s) — check the server log.`
+                      : ""
+                  }`
+                : "No sweep has run yet on this server."}
+            </p>
+          </div>
+          <button
+            onClick={runCleanup}
+            disabled={runBusy}
+            className="shrink-0 rounded-md border border-zinc-600 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
+          >
+            {runBusy ? "Running…" : "Run cleanup now"}
+          </button>
+        </div>
+        {runStatus && (
+          <p
+            className={`text-xs ${runStatus.ok ? "text-emerald-400" : "text-red-400"}`}
+          >
+            {runStatus.text}
+          </p>
+        )}
+      </div>
     </Section>
   );
 }

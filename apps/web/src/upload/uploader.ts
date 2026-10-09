@@ -1,5 +1,6 @@
 import * as tus from "tus-js-client";
 import { UPLOAD_CHUNK_SIZE_BYTES } from "@droparr/shared";
+import { shouldRetryUpload } from "./retry.js";
 
 export interface CreateUploadOptions {
   file: File;
@@ -40,23 +41,29 @@ export function createUpload(options: CreateUploadOptions): tus.Upload {
       options.onProgress(bytesSent, bytesTotal ?? options.file.size);
     },
     onSuccess: () => options.onSuccess(),
-    onError: (error) => options.onError(error.message),
+    onError: (error) => {
+      // 507 = the server refused/aborted the upload because the volume is
+      // full (it also removed any partial file). tus's own message is
+      // opaque, so surface something actionable.
+      const response = (
+        error as { originalResponse?: { getStatus(): number } }
+      ).originalResponse;
+      if (response?.getStatus() === 507) {
+        options.onError(
+          "Server storage is full — the upload was stopped and any partial file removed.",
+        );
+        return;
+      }
+      options.onError(error.message);
+    },
     onUploadUrlAvailable: () => {
       if (upload.url) options.onUploadUrl?.(upload.url);
     },
-    onShouldRetry: (error) => {
+    onShouldRetry: (error): boolean => {
       const status = error.originalResponse
         ? error.originalResponse.getStatus()
         : 0;
-      // A 409 before an upload URL exists is the creation POST saying the
-      // path is already part of the drop — retrying can never succeed.
-      if (status === 409 && !upload.url) return false;
-      // Don't retry our own rejections (type/size/path); retry offset
-      // conflicts, locks, server errors and network failures.
-      if (status >= 400 && status < 500 && status !== 409 && status !== 423) {
-        return false;
-      }
-      return true;
+      return shouldRetryUpload(status, !!upload.url);
     },
   });
   return upload;
