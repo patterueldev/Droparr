@@ -5,6 +5,9 @@ import type {
   HistoryEntry,
   HistoryRejectedFile,
   InstanceKind,
+  Submission,
+  SubmissionItem,
+  SubmissionState,
   Upload,
   UploadState,
   User,
@@ -94,6 +97,26 @@ export class Db {
         lastLoginAt TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS submissions (
+        id TEXT PRIMARY KEY,
+        submitterId TEXT NOT NULL,
+        state TEXT NOT NULL,
+        dropId TEXT NOT NULL,
+        dropName TEXT NOT NULL,
+        sourcePath TEXT NOT NULL,
+        itemsJson TEXT NOT NULL,
+        importMode TEXT NOT NULL DEFAULT 'copy',
+        note TEXT,
+        jobIdsJson TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        completedAt TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_submissions_state
+        ON submissions(state);
+      CREATE INDEX IF NOT EXISTS idx_submissions_submitter
+        ON submissions(submitterId);
+
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
         tokenHash TEXT NOT NULL UNIQUE,
@@ -126,6 +149,8 @@ export class Db {
     // (CREATE TABLE IF NOT EXISTS never alters an existing table).
     this.ensureColumn("history", "titleSlug", "TEXT");
     this.ensureColumn("history", "rejectedJson", "TEXT");
+    this.ensureColumn("history", "submissionId", "TEXT");
+    this.ensureColumn("uploads", "userId", "TEXT");
   }
 
   /** Add a column when an older database predates it (idempotent). */
@@ -144,11 +169,12 @@ export class Db {
     this.db
       .prepare(
         `INSERT INTO history
-         (id, instanceId, kind, title, year, matchedId, titleSlug, filesJson, rejectedJson, result, startedAt, completedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, submissionId, instanceId, kind, title, year, matchedId, titleSlug, filesJson, rejectedJson, result, startedAt, completedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         entry.id,
+        entry.submissionId ?? null,
         entry.instanceId,
         entry.kind,
         entry.title,
@@ -187,12 +213,13 @@ export class Db {
     this.db
       .prepare(
         `INSERT INTO uploads
-         (id, dropId, filename, relPath, ext, size, offset, state, createdAt, updatedAt, completedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, dropId, userId, filename, relPath, ext, size, offset, state, createdAt, updatedAt, completedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         upload.id,
         upload.dropId,
+        upload.userId ?? null,
         upload.filename,
         upload.relPath,
         upload.ext,
@@ -272,6 +299,142 @@ export class Db {
   deleteUpload(id: string): boolean {
     const result = this.db.prepare(`DELETE FROM uploads WHERE id = ?`).run(id);
     return result.changes > 0;
+  }
+
+  /**
+   * True when every non-cancelled upload of the drop belongs to `userId`.
+   * Legacy rows without an owner never grant access.
+   */
+  dropOwnedBy(dropId: string, userId: string): boolean {
+    const rows = this.db
+      .prepare(
+        `SELECT userId FROM uploads WHERE dropId = ? AND state != 'cancelled'`,
+      )
+      .all(dropId) as { userId: string | null }[];
+    if (rows.length === 0) return false;
+    return rows.every((r) => r.userId === userId);
+  }
+
+  // --- Submissions (M3.3) ---
+
+  createSubmission(submission: Submission): void {
+    this.db
+      .prepare(
+        `INSERT INTO submissions
+         (id, submitterId, state, dropId, dropName, sourcePath, itemsJson, importMode, note, jobIdsJson, createdAt, updatedAt, completedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        submission.id,
+        submission.submitterId,
+        submission.state,
+        submission.dropId,
+        submission.dropName,
+        submission.sourcePath,
+        JSON.stringify(submission.items),
+        submission.importMode,
+        submission.note ?? null,
+        submission.jobIds ? JSON.stringify(submission.jobIds) : null,
+        submission.createdAt,
+        submission.updatedAt,
+        submission.completedAt ?? null,
+      );
+  }
+
+  getSubmission(id: string): Submission | undefined {
+    const row = this.db
+      .prepare(`SELECT * FROM submissions WHERE id = ?`)
+      .get(id) as SubmissionRow | undefined;
+    return row ? rowToSubmission(row) : undefined;
+  }
+
+  /** Newest first. */
+  listSubmissions(
+    filter: { state?: SubmissionState; submitterId?: string } = {},
+  ): Submission[] {
+    const where: string[] = [];
+    const params: string[] = [];
+    if (filter.state) {
+      where.push("state = ?");
+      params.push(filter.state);
+    }
+    if (filter.submitterId) {
+      where.push("submitterId = ?");
+      params.push(filter.submitterId);
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM submissions
+         ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+         ORDER BY createdAt DESC`,
+      )
+      .all(...params) as SubmissionRow[];
+    return rows.map(rowToSubmission);
+  }
+
+  /** Pending/approved/importing submission of a drop, if any. */
+  findActiveSubmissionByDrop(dropId: string): Submission | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM submissions
+         WHERE dropId = ? AND state IN ('pending', 'approved', 'importing')
+         ORDER BY createdAt DESC LIMIT 1`,
+      )
+      .get(dropId) as SubmissionRow | undefined;
+    return row ? rowToSubmission(row) : undefined;
+  }
+
+  /**
+   * Hook for the quarantine sweep: drops referenced by a live submission are
+   * never auto-deleted (the submitter is still waiting on a decision).
+   */
+  isDropProtected(dropId: string): boolean {
+    return this.findActiveSubmissionByDrop(dropId) !== undefined;
+  }
+
+  /** Apply a patch to a submission; returns the updated row. */
+  updateSubmission(
+    id: string,
+    patch: Partial<
+      Pick<
+        Submission,
+        "state" | "items" | "importMode" | "note" | "jobIds" | "completedAt"
+      >
+    >,
+    at: string = new Date().toISOString(),
+  ): Submission | undefined {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    if (patch.state !== undefined) {
+      sets.push("state = ?");
+      params.push(patch.state);
+    }
+    if (patch.items !== undefined) {
+      sets.push("itemsJson = ?");
+      params.push(JSON.stringify(patch.items));
+    }
+    if (patch.importMode !== undefined) {
+      sets.push("importMode = ?");
+      params.push(patch.importMode);
+    }
+    if (patch.note !== undefined) {
+      sets.push("note = ?");
+      params.push(patch.note);
+    }
+    if (patch.jobIds !== undefined) {
+      sets.push("jobIdsJson = ?");
+      params.push(patch.jobIds.length > 0 ? JSON.stringify(patch.jobIds) : null);
+    }
+    if (patch.completedAt !== undefined) {
+      sets.push("completedAt = ?");
+      params.push(patch.completedAt);
+    }
+    sets.push("updatedAt = ?");
+    params.push(at);
+    this.db
+      .prepare(`UPDATE submissions SET ${sets.join(", ")} WHERE id = ?`)
+      .run(...params, id);
+    return this.getSubmission(id);
   }
 
   // --- Users ---
@@ -533,6 +696,7 @@ export class Db {
 
 interface HistoryRow {
   id: string;
+  submissionId: string | null;
   instanceId: string;
   kind: string;
   title: string;
@@ -582,9 +746,26 @@ interface SetupRow {
   createdAt: string;
 }
 
+interface SubmissionRow {
+  id: string;
+  submitterId: string;
+  state: string;
+  dropId: string;
+  dropName: string;
+  sourcePath: string;
+  itemsJson: string;
+  importMode: string;
+  note: string | null;
+  jobIdsJson: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
 function rowToEntry(row: HistoryRow): HistoryEntry {
   return {
     id: row.id,
+    submissionId: row.submissionId ?? undefined,
     instanceId: row.instanceId,
     kind: row.kind as InstanceKind,
     title: row.title,
@@ -600,6 +781,26 @@ function rowToEntry(row: HistoryRow): HistoryEntry {
       started: row.startedAt,
       completed: row.completedAt ?? undefined,
     },
+  };
+}
+
+function rowToSubmission(row: SubmissionRow): Submission {
+  return {
+    id: row.id,
+    submitterId: row.submitterId,
+    state: row.state as SubmissionState,
+    dropId: row.dropId,
+    dropName: row.dropName,
+    sourcePath: row.sourcePath,
+    items: JSON.parse(row.itemsJson) as SubmissionItem[],
+    importMode: row.importMode as Submission["importMode"],
+    note: row.note ?? undefined,
+    jobIds: row.jobIdsJson
+      ? (JSON.parse(row.jobIdsJson) as string[])
+      : undefined,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    completedAt: row.completedAt ?? undefined,
   };
 }
 
@@ -632,6 +833,7 @@ function rowToSession(row: SessionRow): StoredSession {
 interface UploadRow {
   id: string;
   dropId: string;
+  userId: string | null;
   filename: string;
   relPath: string;
   ext: string;
@@ -647,6 +849,7 @@ function rowToUpload(row: UploadRow): Upload {
   return {
     id: row.id,
     dropId: row.dropId,
+    userId: row.userId ?? undefined,
     filename: row.filename,
     relPath: row.relPath,
     ext: row.ext,

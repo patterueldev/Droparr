@@ -44,6 +44,8 @@ export interface ImportRequest {
    * that sit loose at a shared drop root; whole-drop imports omit it.
    */
   files?: string[];
+  /** Set when the import runs from an approved submission (M3.3). */
+  submissionId?: string;
 }
 
 export interface ImportDeps {
@@ -320,6 +322,7 @@ export async function runImport(
     historyId = nanoid(12);
     const entry: HistoryEntry = {
       id: historyId,
+      submissionId: req.submissionId,
       instanceId: instance.id,
       kind: instance.kind,
       title: req.match.title,
@@ -389,6 +392,7 @@ export async function runImport(
       try {
         db.addHistory({
           id: historyId,
+          submissionId: req.submissionId,
           instanceId: instance.id,
           kind: instance.kind,
           title: req.match.title,

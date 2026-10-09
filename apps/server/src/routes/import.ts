@@ -135,6 +135,14 @@ export function importRoutes(
   app.get<{ Params: { id: string } }>("/api/jobs/:id", async (req, reply) => {
     const job = deps.jobs.get(req.params.id);
     if (!job) return reply.code(404).send({ error: "Job not found" });
+    // Submitters may replay only their own submission imports (M3.3).
+    if (
+      req.auth &&
+      req.auth.user.role !== "admin" &&
+      job.ownerId !== req.auth.user.id
+    ) {
+      return reply.code(403).send({ error: "Admin access required" });
+    }
     return job;
   });
 }

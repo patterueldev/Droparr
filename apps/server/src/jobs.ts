@@ -37,6 +37,12 @@ export interface JobState {
   id: string;
   events: JobEvent[];
   finished: boolean;
+  /**
+   * User who owns the job's data. Admin jobs leave it unset; submission
+   * imports set it to the submitter so their socket can follow progress
+   * (M3.3). Only admins and the owner see a job's events.
+   */
+  ownerId?: string;
 }
 
 /**
@@ -48,8 +54,8 @@ export class JobRegistry extends EventEmitter {
   private readonly jobs = new Map<string, JobState>();
   private readonly maxFinished = 50;
 
-  create(id: string): void {
-    this.jobs.set(id, { id, events: [], finished: false });
+  create(id: string, ownerId?: string): void {
+    this.jobs.set(id, { id, events: [], finished: false, ownerId });
   }
 
   emitEvent(event: JobEvent): void {

@@ -75,6 +75,7 @@ export async function removeUpload(
     action: "deleted",
     uploadId: upload.id,
     dropId: upload.dropId,
+    userId: upload.userId,
     filename: upload.filename,
     relPath: upload.relPath,
     offset: upload.offset,
@@ -84,7 +85,7 @@ export async function removeUpload(
 
 /**
  * Remove every upload of a drop plus its quarantine directory. Used by the
- * sweep and (later, M3.3) by reject flows. The drop path is asserted to be
+ * sweep and by the M3.3 reject flow. The drop path is asserted to be
  * strictly inside the quarantine dir before anything is deleted.
  */
 export async function removeDrop(
@@ -103,6 +104,7 @@ export async function removeDrop(
       action: "deleted",
       uploadId: upload.id,
       dropId: upload.dropId,
+      userId: upload.userId,
       filename: upload.filename,
       relPath: upload.relPath,
       offset: upload.offset,

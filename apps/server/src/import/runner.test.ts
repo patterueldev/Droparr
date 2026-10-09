@@ -194,6 +194,7 @@ describe("runImport (mock Sonarr)", () => {
       {
         sourcePath,
         categoryId: "tv",
+        submissionId: "sub-1",
         match: {
           tvdbId: 81189,
           title: "Breaking Bad",
@@ -267,6 +268,7 @@ describe("runImport (mock Sonarr)", () => {
     const history = db.listHistory();
     expect(history).toHaveLength(1);
     expect(history[0].result).toBe("partial");
+    expect(history[0].submissionId).toBe("sub-1");
     expect(history[0].title).toBe("Breaking Bad");
     expect(history[0].matchedId).toBe(7);
     expect(history[0].titleSlug).toBe("breaking-bad");
