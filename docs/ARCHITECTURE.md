@@ -50,6 +50,7 @@ SubmissionItem { subPath, sourcePath, analysis, title, year?,
 
 User      { id, jellyfinUserId, name, role: "admin" | "submitter",
             trusted: boolean, blocked: boolean }
+             // roleSource ("jellyfin" | "local") is server-side only
 
 HistoryEntry { id, instanceId, kind, title, year, matchedId, titleSlug?, files,
                rejectedFiles?, result, timestamps }
@@ -193,7 +194,7 @@ Source of truth: `src/NzbDrone.Core/MediaFiles/**/Manual/ManualImportCommand.cs`
 - Login: `POST {jellyfin}/Users/AuthenticateByName`, body `{ Username, Pw }` → `{ User, SessionInfo, AccessToken, ServerId }`; `User.Policy.IsAdministrator` is available.
 - Droparr extracts identity immediately, **never stores passwords**, and creates its own server-side session (secure, HttpOnly cookie).
 - First-run setup wizard requires a Jellyfin admin login → that account becomes the Droparr admin; the wizard locks afterwards.
-- Jellyfin admins auto-grant Droparr admin (overridable); everyone else is a submitter pending approval.
+- Jellyfin admins auto-grant Droparr admin; everyone else is a submitter pending approval. Admins can promote/demote from the Users page — a role set there is pinned locally (`roleSource = "local"`) and survives later Jellyfin logins, while untouched users keep syncing with Jellyfin's admin flag. A login sync never demotes the last active admin (lockout guard).
 - Optional Jellyfin API key (admin-generated) for avatars and `POST /Library/Refresh` after imports.
 
 ### Session model (M2.1)
@@ -201,8 +202,10 @@ Source of truth: `src/NzbDrone.Core/MediaFiles/**/Manual/ManualImportCommand.cs`
 - Every request carries Jellyfin's client-info header (`MediaBrowser Client="Droparr", Device=…, DeviceId=…`). The transient `AccessToken` from a successful login is revoked via `POST /Sessions/Logout` immediately and never stored.
 - Sessions live server-side in SQLite: the `droparr_session` cookie holds a 256-bit random token, only its SHA-256 hash is persisted. Flags: `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` only on HTTPS (`secure: "auto"`) — the same code path works on LAN http and behind the Tunnel (M2.4).
 - Sliding 30-day expiry, touched at most hourly; expired sessions and sessions belonging to blocked users are dropped when used.
+- Users page (M2.3): admins list users and set role, trust and blocked. Blocking deletes every session of that account and notifies live sockets, so the browser is signed out immediately; the blocked account gets `403` on the next login and every session lookup.
 - Login protection: 20 requests / 15 min per IP (`@fastify/rate-limit`) plus a per-username lockout after 5 failed credentials for 15 min (SQLite, survives restarts). Only Jellyfin 401/403 count as failures; outages return 502 without counting. Unknown users and wrong passwords get the same generic 401.
-- All `/api/*` routes require a session. Admin config routes stay admin-only;
+- All `/api/*` routes require a session. Admin config routes (settings,
+  instances, categories, fs, import, history, users) stay admin-only;
   submitters additionally reach `/api/uploads*` and `/api/submissions*` (with
   per-route ownership/admin checks) and their own `/api/jobs/:id` replay.
   `/api/ws` closes unauthenticated upgrades with 4401, scopes upload/job/
@@ -225,8 +228,9 @@ Noted alternative: a DNS-only record bypasses the limit but exposes the origin I
 ## Security model
 
 - Jellyfin login with rate limiting + lockout; sessions in SQLite; admin can revoke.
+- Admins manage roles, trust and blocking on the Users page; blocking purges the account's sessions.
 - First-run setup is necessarily unauthenticated while it is open — on a fresh install, complete the wizard on the LAN before exposing the instance through the Tunnel.
-- Non-admin submissions are quarantined until approved; nothing reaches the \*arrs before approval. Submitters only ever see their own uploads, submissions and job events; admin config and filesystem browsing stay closed to them.
+- Non-admin submissions are quarantined until approved; nothing reaches the \*arrs before approval. The approval decision (`requiresApproval`: admins and trusted submitters auto-approve, everyone else waits) lives in `@droparr/shared` and drives the M3.3 pending queue. Submitters only ever see their own uploads, submissions and job events; admin config and filesystem browsing stay closed to them.
 - Upload allowlist (video + subtitle extensions), configurable size caps, free-space guards (10 GiB default) with clean mid-upload aborts, and an hourly quarantine sweep that removes abandoned/rejected drops after a configurable retention window (7 days default).
 - Path-traversal guards on all filesystem endpoints; API keys stored server-side, env-overridable, never logged.
 - Optional Cloudflare Access in front of admin routes for extra hardening.

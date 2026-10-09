@@ -43,6 +43,13 @@ export interface SetupState {
   createdAt: string;
 }
 
+/**
+ * Where a user's role came from. `jellyfin` keeps syncing with the Jellyfin
+ * admin flag on every login; `local` means an admin changed it in Droparr and
+ * the override sticks.
+ */
+export type RoleSource = "jellyfin" | "local";
+
 export class Db {
   private readonly db: Database.Database;
 
@@ -91,6 +98,7 @@ export class Db {
         jellyfinUserId TEXT NOT NULL UNIQUE,
         name TEXT NOT NULL,
         role TEXT NOT NULL,
+        roleSource TEXT NOT NULL DEFAULT 'jellyfin',
         trusted INTEGER NOT NULL DEFAULT 0,
         blocked INTEGER NOT NULL DEFAULT 0,
         createdAt TEXT NOT NULL,
@@ -149,6 +157,7 @@ export class Db {
     // (CREATE TABLE IF NOT EXISTS never alters an existing table).
     this.ensureColumn("history", "titleSlug", "TEXT");
     this.ensureColumn("history", "rejectedJson", "TEXT");
+    this.ensureColumn("users", "roleSource", "TEXT NOT NULL DEFAULT 'jellyfin'");
     this.ensureColumn("history", "submissionId", "TEXT");
     this.ensureColumn("uploads", "userId", "TEXT");
   }
@@ -446,10 +455,89 @@ export class Db {
     return row ? rowToUser(row) : undefined;
   }
 
+  /** Newest accounts last; the Users page renders them in this order. */
+  listUsers(): User[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM users ORDER BY name COLLATE NOCASE ASC, createdAt ASC`,
+      )
+      .all() as UserRow[];
+    return rows.map(rowToUser);
+  }
+
+  /** Admins that can still sign in — blocked admins do not count. */
+  countActiveAdmins(): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND blocked = 0`,
+      )
+      .get() as { count: number };
+    return row.count;
+  }
+
   /**
-   * Create or refresh a user from a Jellyfin login. The role is re-synced on
-   * every login so Jellyfin policy changes propagate; Droparr-local flags
-   * (trusted, blocked) are preserved.
+   * Apply a role/trust/block patch from the Users page.
+   *
+   * A role change pins the user to Droparr (`roleSource = 'local'`), so the
+   * Jellyfin admin flag no longer overwrites it on later logins; re-saving the
+   * current role is a no-op and keeps Jellyfin sync alive. Demoting or
+   * blocking the last active admin is refused — the guard lives inside the
+   * transaction so two racing requests cannot empty the admin set.
+   */
+  updateUser(
+    id: string,
+    patch: { role?: UserRole; trusted?: boolean; blocked?: boolean },
+  ): { ok: true; user: User } | { ok: false; error: "not-found" | "last-admin" } {
+    const apply = this.db.transaction(
+      ():
+        | { ok: true; user: User }
+        | { ok: false; error: "not-found" | "last-admin" } => {
+        const row = this.db
+          .prepare(`SELECT * FROM users WHERE id = ?`)
+          .get(id) as UserRow | undefined;
+        if (!row) return { ok: false, error: "not-found" };
+
+        const removesActiveAdmin =
+          row.role === "admin" &&
+          row.blocked === 0 &&
+          ((patch.role !== undefined && patch.role !== "admin") ||
+            patch.blocked === true);
+        if (removesActiveAdmin && this.countActiveAdmins() <= 1) {
+          return { ok: false, error: "last-admin" };
+        }
+
+        const role = patch.role ?? (row.role as UserRole);
+        const roleSource: RoleSource =
+          patch.role !== undefined && patch.role !== row.role
+            ? "local"
+            : (row.roleSource as RoleSource);
+        const trusted = patch.trusted ?? row.trusted === 1;
+        const blocked = patch.blocked ?? row.blocked === 1;
+        this.db
+          .prepare(
+            `UPDATE users SET role = ?, roleSource = ?, trusted = ?, blocked = ? WHERE id = ?`,
+          )
+          .run(role, roleSource, trusted ? 1 : 0, blocked ? 1 : 0, id);
+        return {
+          ok: true,
+          user: rowToUser({
+            ...row,
+            role,
+            roleSource,
+            trusted: trusted ? 1 : 0,
+            blocked: blocked ? 1 : 0,
+          }),
+        };
+      },
+    );
+    return apply();
+  }
+
+  /**
+   * Create or refresh a user from a Jellyfin login. The role follows Jellyfin
+   * until an admin changes it in Droparr (`roleSource = 'local'`), after which
+   * the local role wins across logins; Droparr-local flags (trusted, blocked)
+   * are always preserved. A Jellyfin sync never demotes the last active admin.
    */
   upsertUser(input: {
     jellyfinUserId: string;
@@ -463,15 +551,27 @@ export class Db {
       .get(input.jellyfinUserId) as UserRow | undefined;
 
     if (existing) {
+      let role = input.role;
+      if (existing.roleSource === "local") {
+        role = existing.role as UserRole;
+      } else if (
+        role === "submitter" &&
+        existing.role === "admin" &&
+        this.countActiveAdmins() <= 1
+      ) {
+        // Jellyfin removed the admin flag from the only admin: keep them admin
+        // rather than locking the install out of its configuration.
+        role = "admin";
+      }
       this.db
         .prepare(
           `UPDATE users SET name = ?, role = ?, lastLoginAt = ? WHERE id = ?`,
         )
-        .run(input.name, input.role, now, existing.id);
+        .run(input.name, role, now, existing.id);
       return rowToUser({
         ...existing,
         name: input.name,
-        role: input.role,
+        role,
         lastLoginAt: now,
       });
     }
@@ -489,14 +589,15 @@ export class Db {
     this.db
       .prepare(
         `INSERT INTO users
-         (id, jellyfinUserId, name, role, trusted, blocked, createdAt, lastLoginAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, jellyfinUserId, name, role, roleSource, trusted, blocked, createdAt, lastLoginAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         user.id,
         user.jellyfinUserId,
         user.name,
         user.role,
+        "jellyfin",
         user.trusted ? 1 : 0,
         user.blocked ? 1 : 0,
         user.createdAt,
@@ -548,6 +649,16 @@ export class Db {
       )
       .all(userId) as SessionRow[];
     return rows.map(rowToSession);
+  }
+
+  /**
+   * Remove every session of a user (blocking them). Returns the deleted rows
+   * so callers can notify live sockets before they notice the next 401.
+   */
+  deleteSessionsByUser(userId: string): StoredSession[] {
+    const sessions = this.listSessions(userId);
+    this.db.prepare(`DELETE FROM sessions WHERE userId = ?`).run(userId);
+    return sessions;
   }
 
   touchSession(id: string, lastSeenAt: string, expiresAt: string): void {
@@ -715,6 +826,7 @@ interface UserRow {
   jellyfinUserId: string;
   name: string;
   role: string;
+  roleSource: string;
   trusted: number;
   blocked: number;
   createdAt: string;

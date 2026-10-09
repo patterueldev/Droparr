@@ -22,6 +22,7 @@ import { LoginThrottle } from "./auth/throttle.js";
 import { AuthEvents, type SessionRevokedEvent } from "./auth/events.js";
 import { authGuard } from "./auth/guard.js";
 import { authRoutes } from "./routes/auth.js";
+import { userRoutes } from "./routes/users.js";
 import { setupRoutes } from "./routes/setup.js";
 import { instanceRoutes } from "./routes/instances.js";
 import { categoryRoutes } from "./routes/categories.js";
@@ -121,6 +122,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
 
   // API routes
   authRoutes(app, { config, db, sessions, throttle, authEvents });
+  userRoutes(app, { db, authEvents });
   setupRoutes(app, { config, db });
   instanceRoutes(app, config);
   categoryRoutes(app, config);

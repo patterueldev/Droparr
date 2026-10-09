@@ -15,6 +15,7 @@ import {
   type DropAnalysis,
 } from "@droparr/core";
 import {
+  requiresApproval,
   submissionStateSchema,
   type Category,
   type FileRef,
@@ -540,7 +541,7 @@ export function submissionRoutes(
     // Trusted submitters and admins skip the queue — but only when the review
     // is complete enough to actually import; otherwise an admin fixes it.
     const autoApprove =
-      (user.role === "admin" || user.trusted) &&
+      !requiresApproval(user) &&
       validateImportItems(deps, submission) === undefined;
     if (autoApprove) submission.state = "approved";
 

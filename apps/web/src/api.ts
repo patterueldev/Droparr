@@ -85,6 +85,13 @@ export const api = {
   revokeSession: (id: string) =>
     request<void>(`/api/auth/sessions/${id}`, { method: "DELETE" }),
 
+  // Users (admin user management)
+  users: () => request<User[]>("/api/users"),
+  updateUser: (
+    id: string,
+    patch: { role?: User["role"]; trusted?: boolean; blocked?: boolean },
+  ) => request<User>(`/api/users/${id}`, { method: "PATCH", body: patch }),
+
   // First-run setup wizard (open until setup completes, then locked)
   setupStatus: () => request<SetupStatus>("/api/setup/status"),
   setupJellyfinTest: (baseUrl: string) =>

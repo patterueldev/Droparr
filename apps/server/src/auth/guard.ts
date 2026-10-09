@@ -56,14 +56,15 @@ function pathname(url: string): string {
  * - while first-run setup is incomplete → only health/auth/setup respond;
  *   everything else gets `409 { code: "setup_required" }`
  * - public paths → allowed
- * - authenticated → allowed
- * - submitter paths (uploads, submissions, jobs) → allowed for any session,
- *   with ownership enforced in the routes
- * - any other API route → admin only for now; submitters get their own routes
- *   in M3.
+ * - authenticated → auth routes are always available; uploads, submissions and
+ *   job tracking are available to submitters too, with ownership enforced in
+ *   the route handlers
+ * - any other API route → admin only (settings, instances, categories, fs,
+ *   import, history, users)
  *
  * `/api/ws` authenticates inside the WebSocket handler so it can close the
- * socket with a 4401 code instead of an HTTP reply.
+ * socket with a 4401 code instead of an HTTP reply; frames are scoped per
+ * user there.
  */
 export function authGuard(
   app: FastifyInstance,
