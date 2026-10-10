@@ -1,8 +1,15 @@
 # Droparr — example deployment next to the *arr stack.
-# Adjust volume paths to match your server layout, then: docker compose up -d --build
+# Pulls the prebuilt multi-arch image from GHCR. Adjust volume paths to match
+# your server layout, then: docker compose pull && docker compose up -d
+# Full guide: docs/DEPLOYMENT.md
 services:
   droparr:
-    build: .
+    # `latest` follows the newest release candidate. Pin a specific candidate
+    # for reproducible installs/rollbacks, e.g.:
+    #   image: ghcr.io/patterueldev/droparr:v1.0.0-rc1
+    image: ghcr.io/patterueldev/droparr:latest
+    # To build from source instead of pulling, comment out `image:` and use:
+    # build: .
     container_name: droparr
     ports:
       - "3100:3100"

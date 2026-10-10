@@ -17,12 +17,15 @@ RUN pnpm --filter @droparr/web build
 
 # ---------- runtime ----------
 FROM node:22-slim AS runtime
+# Set by the release workflow to the git tag (e.g. v1.0.0-rc1).
+ARG DROPARR_VERSION=dev
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3100 \
     DROPARR_DATA=/data \
     DROPARR_CONFIG=/config/config.json \
-    DROPARR_WEB_DIST=/app/apps/web/dist
+    DROPARR_WEB_DIST=/app/apps/web/dist \
+    DROPARR_VERSION=${DROPARR_VERSION}
 # gosu lets the entrypoint drop root after fixing volume ownership.
 RUN corepack enable \
  && apt-get update \

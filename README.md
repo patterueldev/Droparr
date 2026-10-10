@@ -11,7 +11,7 @@ Droparr is a self-hosted web app that takes an existing movie or series folder �
 
 Optional extras: LLM-assisted matching for ugly filenames (off by default), Jellyfin login with an admin approval queue for submissions from family and friends, and ntfy/Discord webhook notifications when a submission needs approval or an import finishes.
 
-> **Status:** early development — plan and architecture are locked; implementation starts at milestone M1. See [`docs/PLAN.md`](docs/PLAN.md).
+> **Status:** `v1.0.0` release candidate — core pipeline, Jellyfin auth, and shared mode (uploads, approval queue, submission status) are built; now refining live on a home server. See [`docs/PLAN.md`](docs/PLAN.md) for milestones.
 
 ## Why not the built-in Library Import?
 
@@ -55,11 +55,16 @@ pnpm -r test       # unit tests (analyzer, path mapping, staging)
 pnpm --filter @droparr/web build   # build the web UI
 ```
 
-Deploy with Docker:
+Deploy with Docker — prebuilt multi-arch images (`linux/amd64` + `linux/arm64`)
+are published to GHCR, and `latest` follows the newest release candidate:
 
 ```bash
-docker compose up -d --build
+docker compose pull && docker compose up -d   # ghcr.io/patterueldev/droparr:latest
 ```
+
+Pin an exact candidate (`ghcr.io/patterueldev/droparr:v1.0.0-rcN`) for
+reproducible installs and rollbacks. Candidates are cut by tagging `main` —
+CI builds and publishes both the pinned tag and `latest`.
 
 The server serves the built UI and the API on a single port (`3100`).
 Exposing it at a subdomain with Cloudflare Tunnel — plus the hardening

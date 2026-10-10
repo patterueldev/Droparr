@@ -33,13 +33,63 @@ visitor ──HTTPS──► Cloudflare edge ──tunnel──► cloudflared �
 
 ## 1. Deploy Droparr
 
-```bash
-git clone https://github.com/patterueldev/Droparr.git
-cd Droparr
-docker compose up -d --build
+Images are published from this repository to GitHub Container Registry —
+no registry login is needed (the package is public):
+
+| Tag | Meaning |
+| --- | --- |
+| `ghcr.io/patterueldev/droparr:latest` | newest release candidate — moves with each `v1.0.0-rcN` tag |
+| `ghcr.io/patterueldev/droparr:v1.0.0-rcN` | pinned candidates — use for reproducible installs and rollbacks |
+| `ghcr.io/patterueldev/droparr:v1.0.0` | first official release (not published yet) |
+
+The repo's [`docker-compose.yml`](../docker-compose.yml) is ready to use as-is
+(adjust paths/PUID/PGID after copying), or write a standalone one:
+
+```yaml
+services:
+  droparr:
+    image: ghcr.io/patterueldev/droparr:latest
+    container_name: droparr
+    ports:
+      - "3100:3100"            # use "127.0.0.1:3100:3100" when tunneled (below)
+    environment:
+      - DROPARR_DATA=/data
+      - DROPARR_CONFIG=/config/config.json
+      - PUID=1000              # match your *arr stack
+      - PGID=1000
+      - UMASK=022
+    volumes:
+      - ./config:/config
+      - ./data:/data
+      - ./staging:/data/staging
+      # - /mnt/media/incoming:/incoming   # optional server-side drops
+    restart: unless-stopped
 ```
 
-Adjust `docker-compose.yml` to your server layout. The important pieces:
+```bash
+mkdir -p config data staging
+docker compose pull && docker compose up -d
+curl -s http://localhost:3100/api/health   # → {"ok":true,"version":"v1.0.0-rcN"}
+```
+
+### For an automated install (agent checklist)
+
+Everything above is non-interactive. The only human step is the first-run
+wizard (it needs Jellyfin admin credentials — **never handle those** for the
+user). In order:
+
+1. Ensure Docker + Compose v2; render the compose file with the server's real
+   paths, PUID/PGID (must match the \*arr stack), and the staging mount.
+2. `docker compose pull && docker compose up -d`; verify `/api/health` returns
+   the expected image version.
+3. Set up the Cloudflare Tunnel (sections 2–3) and run the verification bench
+   (section 4).
+4. Hand over to the human: complete the wizard on the LAN (below), then
+   configure instances, categories and the staging directory in Settings.
+
+### Adjustment reference
+
+The important settings:
 
 | Setting | Why |
 | --- | --- |
@@ -229,8 +279,11 @@ approval queue.
 ## Operations
 
 ```bash
-# update
-git pull && docker compose up -d --build
+# update to the newest release candidate
+docker compose pull && docker compose up -d
+
+# pin or roll back: set the image tag in docker-compose.yml, then
+docker compose up -d
 
 # logs
 docker compose logs -f droparr cloudflared
@@ -240,6 +293,13 @@ docker compose logs -f droparr cloudflared
 ./data/droparr.db             # sessions, history, upload state
 ./data/quarantine/            # in-flight uploads (transient)
 ./staging/                    # shared with the *arrs
+```
+
+Release process (maintainer): tag `main` and push the tag — CI builds the
+multi-arch image and publishes both the pinned tag and `latest`:
+
+```bash
+git tag v1.0.0-rc2 && git push origin v1.0.0-rc2
 ```
 
 ## Troubleshooting
