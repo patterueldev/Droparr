@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { SetupStatus, User } from "@droparr/shared";
 import { ApiError, api } from "../api";
+import { JellyfinAddressInput } from "./JellyfinAddressInput";
 
 type Step = "url" | "login" | "confirm" | "done";
 
@@ -237,7 +238,11 @@ function UrlStep({
   initialUrl: string;
   onSaved: (info: ServerInfo) => void;
 }) {
-  const [baseUrl, setBaseUrl] = useState(initialUrl);
+  // Composed/advanced URL emitted by the address inputs — the value the
+  // server stores. Null until the first emit (and while invalid).
+  const [draft, setDraft] = useState<{ url: string; valid: boolean } | null>(
+    null,
+  );
   const [testResult, setTestResult] = useState<{
     ok: boolean;
     text: string;
@@ -245,13 +250,14 @@ function UrlStep({
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const canSubmit = baseUrl.trim().startsWith("http");
+  const url = draft?.url ?? initialUrl.trim();
+  const canSubmit = draft?.valid ?? false;
 
   const test = async () => {
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await api.setupJellyfinTest(baseUrl.trim());
+      const res = await api.setupJellyfinTest(url);
       setTestResult({
         ok: true,
         text: `${res.serverName ?? "Jellyfin"} ${res.version ?? ""}`.trim(),
@@ -270,7 +276,7 @@ function UrlStep({
     setSaving(true);
     setTestResult(null);
     try {
-      const res = await api.setupJellyfin(baseUrl.trim());
+      const res = await api.setupJellyfin(url);
       onSaved({ serverName: res.serverName, version: res.version });
     } catch (err) {
       setTestResult({
@@ -284,22 +290,19 @@ function UrlStep({
 
   return (
     <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-5 space-y-4">
-      <label className="block space-y-1.5">
-        <span className="text-xs text-zinc-400">Jellyfin URL</span>
-        <input
-          value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
-          placeholder="http://192.168.1.10:8096"
-          className="input font-mono"
-          autoFocus
-        />
-      </label>
+      <JellyfinAddressInput
+        initialUrl={initialUrl}
+        onChange={(composed, valid) => setDraft({ url: composed, valid })}
+        autoFocus
+      />
 
       <p className="text-[11px] leading-relaxed text-zinc-500">
         Must be reachable from the Droparr server itself — inside Docker use
-        the service name (e.g. <code>http://jellyfin:8096</code>), otherwise
-        the host's LAN IP. Bonjour (<code>*.local</code>) names resolve on
-        your Mac but not inside a container.
+        the service name (e.g. host <code>jellyfin</code>, port{" "}
+        <code>8096</code>), otherwise the host's LAN IP. Bonjour (
+        <code>*.local</code>) names resolve on your Mac but not inside a
+        container. No Jellyfin API key is needed — you sign in with your
+        Jellyfin admin account next.
       </p>
 
       {testResult && (

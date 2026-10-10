@@ -196,6 +196,11 @@ export const api = {
       parent: string | null;
       dirs: { name: string; path: string }[];
     }>(`/api/fs/list${path ? `?path=${encodeURIComponent(path)}` : ""}`),
+  /** Type-ahead directory suggestions (absolute paths on the server). */
+  suggestDirs: (path: string) =>
+    request<{ dir: string; matches: string[] }>(
+      `/api/fs/suggest?path=${encodeURIComponent(path)}`,
+    ),
   analyze: (path: string) =>
     request<AnalyzeResponse>("/api/analyze", { method: "POST", body: { path } }),
 
