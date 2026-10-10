@@ -10,7 +10,7 @@ import {
   webhookUrlSchema,
 } from "@droparr/shared";
 import type { ConfigStore } from "../config/store.js";
-import { buildExport, validateImport } from "../config/import.js";
+import { buildExport, reconcileJellyfinOnImport, validateImport } from "../config/import.js";
 import { deliverWebhook } from "../notifications/webhook.js";
 import { auditSettingsStaging } from "../staging/check.js";
 import { diskSpace } from "../uploads/disk.js";
@@ -173,34 +173,39 @@ export function settingsRoutes(
 
     const warnings = [...result.warnings];
 
+    // The Jellyfin URL is deployment-specific — never let an import silently
+    // replace a working local value (e.g. Docker service name → *.local).
+    const reconciled = reconcileJellyfinOnImport(result.config, config.get());
+    if (reconciled.warning) warnings.push(reconciled.warning);
+
     // Machine-specific paths may not exist on this host (e.g. Mac → server).
-    if (!result.config.stagingDir) {
+    if (!reconciled.config.stagingDir) {
       warnings.push(
         "Staging directory is not set — configure it in Settings before importing anything.",
       );
     } else {
       try {
-        const st = await stat(result.config.stagingDir);
+        const st = await stat(reconciled.config.stagingDir);
         if (!st.isDirectory()) {
           warnings.push(
-            `Staging directory "${result.config.stagingDir}" is not a directory on this machine — update it in Settings.`,
+            `Staging directory "${reconciled.config.stagingDir}" is not a directory on this machine — update it in Settings.`,
           );
         }
       } catch {
         warnings.push(
-          `Staging directory "${result.config.stagingDir}" does not exist on this machine — update it in Settings.`,
+          `Staging directory "${reconciled.config.stagingDir}" does not exist on this machine — update it in Settings.`,
         );
       }
     }
 
-    await config.replace(result.config);
+    await config.replace(reconciled.config);
 
     return {
       ok: true,
       warnings,
       summary: {
-        instances: result.config.instances.length,
-        categories: result.config.categories.length,
+        instances: reconciled.config.instances.length,
+        categories: reconciled.config.categories.length,
       },
     };
   });

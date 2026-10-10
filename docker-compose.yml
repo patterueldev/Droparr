@@ -28,6 +28,10 @@ services:
       # - DROPARR_BROWSE_ROOTS=/incoming:/media
       # *arr request timeout in ms (default 30000) — raise for slow VPNs.
       # - DROPARR_ARR_TIMEOUT_MS=30000
+      # Escape hatch: override the Jellyfin URL (wins over config.json) —
+      # recovery when the configured one is unreachable from the container
+      # and nobody can log in to change it.
+      # - DROPARR_JELLYFIN_URL=http://jellyfin:8096
     volumes:
       # JSON config (instances, categories, settings).
       - ./config:/config

@@ -538,6 +538,14 @@ function JellyfinSection({
           Save
         </button>
       </div>
+
+      <p className="text-[11px] leading-relaxed text-zinc-500">
+        Must be reachable from the Droparr container — use the Docker service
+        name (e.g. <code>http://jellyfin:8096</code>) or the server's LAN IP,
+        not a Bonjour <code>*.local</code> name. The{" "}
+        <code>DROPARR_JELLYFIN_URL</code> env var overrides this value.
+      </p>
+
       {status && (
         <p
           className={`text-xs ${status.ok ? "text-emerald-400" : "text-red-400"}`}

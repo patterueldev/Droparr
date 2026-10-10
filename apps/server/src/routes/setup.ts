@@ -4,6 +4,7 @@ import { JellyfinClient } from "@droparr/core";
 import { jellyfinBaseUrlSchema, type SetupStatus } from "@droparr/shared";
 import type { ConfigStore } from "../config/store.js";
 import type { Db } from "../db.js";
+import { effectiveJellyfinBaseUrl } from "../jellyfin/url.js";
 
 const baseUrlSchema = z.object({
   baseUrl: jellyfinBaseUrlSchema,
@@ -33,11 +34,11 @@ export function setupRoutes(app: FastifyInstance, deps: SetupRouteDeps): void {
     if (locked()) {
       return reply.code(403).send({ error: "Setup is already complete" });
     }
-    const jellyfin = config.get().jellyfin;
+    const baseUrl = effectiveJellyfinBaseUrl(config.get());
     const body: SetupStatus = {
       setupRequired: true,
-      jellyfinConfigured: !!jellyfin?.baseUrl,
-      jellyfinBaseUrl: jellyfin?.baseUrl,
+      jellyfinConfigured: !!baseUrl,
+      jellyfinBaseUrl: baseUrl,
       authenticated: !!req.auth,
       user: req.auth?.user,
     };
@@ -108,7 +109,7 @@ export function setupRoutes(app: FastifyInstance, deps: SetupRouteDeps): void {
         .code(403)
         .send({ error: "This account is not a Jellyfin administrator" });
     }
-    if (!config.get().jellyfin?.baseUrl) {
+    if (!effectiveJellyfinBaseUrl(config.get())) {
       return reply.code(409).send({ error: "Configure the Jellyfin URL first" });
     }
     if (!db.completeSetup(req.auth.user.id)) {

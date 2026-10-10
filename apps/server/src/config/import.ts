@@ -128,3 +128,41 @@ export function validateImport(payload: unknown): ImportResult {
 
   return { ok: true, config, warnings };
 }
+
+/**
+ * The Jellyfin URL is deployment-specific (the same hostname rarely resolves
+ * the same way on two machines — e.g. `*.local` works in a Mac browser but
+ * not inside a container). An import therefore never overwrites a working
+ * local value; it only fills the URL in when the local config has none.
+ */
+export function reconcileJellyfinOnImport(
+  imported: DroparrConfig,
+  current: DroparrConfig,
+): { config: DroparrConfig; warning?: string } {
+  const currentUrl = current.jellyfin?.baseUrl;
+  const importedUrl = imported.jellyfin?.baseUrl;
+
+  if (!currentUrl) {
+    if (importedUrl) {
+      return {
+        config: imported,
+        warning: `Imported Jellyfin URL ${importedUrl} — verify it is reachable from the Droparr container (in Docker, use the service name, e.g. http://jellyfin:8096).`,
+      };
+    }
+    return { config: imported };
+  }
+
+  const currentJellyfin = current.jellyfin!;
+  const config: DroparrConfig = {
+    ...imported,
+    jellyfin: { ...imported.jellyfin, ...currentJellyfin },
+  };
+
+  if (importedUrl && importedUrl !== currentUrl) {
+    return {
+      config,
+      warning: `Kept this machine's Jellyfin URL (${currentUrl}); the file contained ${importedUrl}, which may not be reachable here. Change it in Settings → Jellyfin if needed.`,
+    };
+  }
+  return { config };
+}
