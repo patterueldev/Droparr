@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { readdir, stat } from "node:fs/promises";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { analyzeDrop } from "@droparr/core";
 import { walkMediaFiles } from "../fs/walk.js";
@@ -22,19 +22,62 @@ export function fsRoutes(
     .filter(Boolean)
     .map((r) => resolve(r));
 
-  function isAllowed(p: string): boolean {
+  function allowedRoots(): string[] {
     // Extra roots may be dynamic (the upload quarantine dir can change via
     // Settings), so they are resolved per request.
     const extra =
       typeof options.extraRoots === "function"
         ? options.extraRoots()
         : (options.extraRoots ?? []);
-    const roots = [...envRoots, ...extra].filter(Boolean).map((r) => resolve(r));
+    return [...envRoots, ...extra].filter(Boolean).map((r) => resolve(r));
+  }
+
+  function isAllowed(p: string): boolean {
+    const roots = allowedRoots();
     if (roots.length === 0) return true;
-    const resolved = resolve(p);
-    return roots.some(
-      (root) => resolved === root || resolved.startsWith(root + "/"),
-    );
+    return roots.some((root) => encloses(root, p));
+  }
+
+  /** Absolute `parent` is `child` itself, or a directory above it. */
+  function encloses(parent: string, child: string): boolean {
+    const a = resolve(parent);
+    const b = resolve(child);
+    return b === a || b.startsWith(a === "/" ? "/" : a + "/");
+  }
+
+  /**
+   * May we read `dir`? Yes when it sits inside a browse root, or on the path
+   * down to one (so typing `/da` can still surface `/data`). Suggestions are
+   * filtered by the roots either way, so names outside them never leak.
+   */
+  function canBrowse(dir: string): boolean {
+    const roots = allowedRoots();
+    if (roots.length === 0) return true;
+    return roots.some((root) => encloses(dir, root) || encloses(root, dir));
+  }
+
+  /** Suggestable: inside a browse root, or a step on the way down to one. */
+  function isVisible(p: string): boolean {
+    const roots = allowedRoots();
+    if (roots.length === 0) return true;
+    return roots.some((root) => encloses(root, p) || encloses(p, root));
+  }
+
+  /** Absolute subdirectories of `dir`: dot-dirs hidden, sorted by name. */
+  async function listSubdirs(dir: string): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    return entries
+      .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+      .map((e) => join(dir, e.name))
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  async function isDirectory(p: string): Promise<boolean> {
+    try {
+      return (await stat(p)).isDirectory();
+    } catch {
+      return false;
+    }
   }
 
   app.get<{ Querystring: { path?: string } }>("/api/fs/list", async (req, reply) => {
@@ -51,11 +94,10 @@ export function fsRoutes(
       if (!st.isDirectory()) {
         return reply.code(400).send({ error: "Not a directory" });
       }
-      const entries = await readdir(path, { withFileTypes: true });
-      const dirs = entries
-        .filter((e) => e.isDirectory() && !e.name.startsWith("."))
-        .map((e) => ({ name: e.name, path: join(path, e.name) }))
-        .sort((a, b) => a.name.localeCompare(b.name));
+      const dirs = (await listSubdirs(path)).map((p) => ({
+        name: basename(p),
+        path: p,
+      }));
       return {
         path,
         parent: path === "/" ? null : resolve(path, ".."),
@@ -68,6 +110,42 @@ export function fsRoutes(
       return reply.code(500).send({ error: err instanceof Error ? err.message : String(err) });
     }
   });
+
+  /**
+   * Type-ahead directory suggestions for the path pickers (Settings → staging
+   * directory, import wizard): `{ dir, matches }` with absolute paths.
+   *
+   * A partial that already names a directory (or ends in "/") lists that
+   * directory's children; anything else prefix-matches the entries under its
+   * parent — typing `/da` suggests `/data`, continuing suggests
+   * `/data/staging`. Missing or unreadable directories suggest nothing
+   * (never an error), and browse roots are enforced server-side: only paths
+   * inside a root, or steps on the way down to one, are ever returned.
+   */
+  app.get<{ Querystring: { path?: string } }>(
+    "/api/fs/suggest",
+    async (req, reply) => {
+      const raw = req.query.path?.trim() ?? "";
+      if (!raw || !isAbsolute(raw)) {
+        return reply.code(400).send({ error: "Path must be absolute" });
+      }
+
+      // Split the partial into "directory to read" + "prefix to match".
+      // `resolve` strips a trailing slash, so remember it first.
+      const resolved = resolve(raw);
+      const listsChildren =
+        raw.endsWith("/") || resolved === "/" || (await isDirectory(resolved));
+      const dir = listsChildren ? resolved : dirname(resolved);
+      const prefix = listsChildren ? "" : basename(resolved).toLowerCase();
+
+      const matches = canBrowse(dir)
+        ? (await listSubdirs(dir).catch(() => []))
+            .filter((p) => isVisible(p))
+            .filter((p) => basename(p).toLowerCase().startsWith(prefix))
+        : [];
+      return { dir, matches };
+    },
+  );
 
   /** Analyze a dropped folder: enumerate media files + heuristic match. */
   app.post<{ Body: { path?: string } }>("/api/analyze", async (req, reply) => {

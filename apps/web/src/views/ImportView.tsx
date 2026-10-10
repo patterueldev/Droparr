@@ -10,6 +10,7 @@ import {
   type JobEvent,
 } from "../api";
 import UploadPanel from "./UploadPanel";
+import { PathCombobox } from "./PathCombobox";
 import {
   AnalysisCard,
   BatchProgressStep,
@@ -484,14 +485,15 @@ function PathPicker({
       </div>
 
       <div className="flex gap-2">
-        <input
+        <PathCombobox
           value={path}
-          onChange={(e) => setPath(e.target.value)}
-          placeholder="/media/incoming/Some Drop"
-          className="flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm font-mono focus:border-emerald-600 focus:outline-none"
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && path.trim()) onAnalyze(path.trim());
+          onChange={setPath}
+          onEnter={() => {
+            if (path.trim()) onAnalyze(path.trim());
           }}
+          placeholder="/media/incoming/Some Drop"
+          className="flex-1"
+          aria-label="Server path"
         />
         <button
           disabled={busy || !path.trim()}
