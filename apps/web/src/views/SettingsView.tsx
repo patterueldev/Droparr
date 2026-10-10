@@ -9,6 +9,8 @@ import type {
   UploadSettings,
 } from "@droparr/shared";
 import { api, formatBytes, type SweepResult } from "../api";
+import { normalizeJellyfinUrl } from "../jellyfinAddress";
+import { JellyfinAddressInput } from "./JellyfinAddressInput";
 
 const GIB = 1024 ** 3;
 
@@ -459,23 +461,26 @@ function JellyfinSection({
   jellyfin?: { baseUrl: string; apiKey?: string };
   onSaved: () => void;
 }) {
-  const [value, setValue] = useState(jellyfin?.baseUrl ?? "");
-  const [dirty, setDirty] = useState(false);
+  const stored = jellyfin?.baseUrl ?? "";
+  // Composed/advanced URL emitted by the address inputs. Null until the
+  // first emit, so the stored value stands in.
+  const [draft, setDraft] = useState<{ url: string; valid: boolean } | null>(
+    null,
+  );
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(
     null,
   );
 
-  // Keep in sync when loaded.
-  if (!dirty && jellyfin?.baseUrl && value !== jellyfin.baseUrl) {
-    setValue(jellyfin.baseUrl);
-  }
+  const value = draft?.url ?? stored;
+  const valid = draft?.valid ?? false;
+  const dirty = normalizeJellyfinUrl(value) !== normalizeJellyfinUrl(stored);
 
   const test = async () => {
     setBusy(true);
     setStatus(null);
     try {
-      const res = await api.jellyfinTestSaved(value.trim());
+      const res = await api.jellyfinTestSaved(value);
       setStatus({
         ok: true,
         text: `Connected — ${res.serverName ?? "Jellyfin"} ${res.version ?? ""}`.trim(),
@@ -494,9 +499,8 @@ function JellyfinSection({
     setBusy(true);
     setStatus(null);
     try {
-      await api.updateSettings({ jellyfin: { baseUrl: value.trim() } });
+      await api.updateSettings({ jellyfin: { baseUrl: value } });
       setStatus({ ok: true, text: "Saved" });
-      setDirty(false);
       onSaved();
     } catch (err) {
       setStatus({
@@ -511,28 +515,24 @@ function JellyfinSection({
   return (
     <Section
       title="Jellyfin"
-      subtitle="Server used for login. Users sign in with their Jellyfin accounts; admins become Droparr admins."
+      subtitle="Server used for login. Users sign in with their Jellyfin accounts; admins become Droparr admins. No Jellyfin API key is required."
     >
+      <JellyfinAddressInput
+        initialUrl={stored}
+        onChange={(url, isValid) => setDraft({ url, valid: isValid })}
+      />
+
       <div className="flex flex-wrap gap-2">
-        <input
-          value={value}
-          onChange={(e) => {
-            setValue(e.target.value);
-            setDirty(true);
-          }}
-          placeholder="http://192.168.1.10:8096"
-          className="input font-mono flex-1 min-w-[16rem]"
-        />
         <button
           onClick={test}
-          disabled={busy || !value.trim()}
+          disabled={busy || !valid}
           className="rounded-md border border-zinc-600 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
         >
           {busy ? "Checking…" : "Test"}
         </button>
         <button
           onClick={save}
-          disabled={busy || !value.trim() || (!dirty && value === jellyfin?.baseUrl)}
+          disabled={busy || !valid || !dirty}
           className="rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 px-4 py-2 text-sm font-medium"
         >
           Save
@@ -541,9 +541,10 @@ function JellyfinSection({
 
       <p className="text-[11px] leading-relaxed text-zinc-500">
         Must be reachable from the Droparr container — use the Docker service
-        name (e.g. <code>http://jellyfin:8096</code>) or the server's LAN IP,
-        not a Bonjour <code>*.local</code> name. The{" "}
-        <code>DROPARR_JELLYFIN_URL</code> env var overrides this value.
+        name (e.g. host <code>jellyfin</code>, port <code>8096</code>) or the
+        server's LAN IP, not a Bonjour <code>*.local</code> name. Droparr
+        authenticates with Jellyfin user credentials, so no API key is needed.
+        The <code>DROPARR_JELLYFIN_URL</code> env var overrides this value.
       </p>
 
       {status && (
