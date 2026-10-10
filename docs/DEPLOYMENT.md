@@ -85,7 +85,8 @@ user). In order:
 3. Set up the Cloudflare Tunnel (sections 2–3) and run the verification bench
    (section 4).
 4. Hand over to the human: complete the wizard on the LAN (below), then
-   configure instances, categories and the staging directory in Settings.
+   configure instances, categories and the staging directory in Settings
+   (see the [shared staging walkthrough](#shared-staging-volume--walkthrough)).
 
 ### Adjustment reference
 
@@ -100,7 +101,7 @@ The important settings:
 | `HOST=0.0.0.0` | Baked into the image: the container listens on all interfaces. Reachability is controlled by the **published port**, not this value |
 | `DROPARR_JELLYFIN_URL` (optional) | Overrides the Jellyfin URL stored in config — the escape hatch when the stored URL is unreachable, or nobody can log in to change it |
 
-### Volumes and the shared staging view
+### Volumes
 
 ```yaml
 volumes:
@@ -116,10 +117,115 @@ volumes:
 | `/data/staging` | **Shared** staging dir. Droparr writes here; Sonarr/Radarr must see the same files at their own path |
 | `/incoming` (optional) | Server-side drops for admin analysis |
 
-The number-one setup gotcha: the staging directory looks different inside each
-container. Configure the same path in **Settings → Staging directory** as
-Droparr sees it, and add a per-instance **path mapping** for how the \*arrs
-see it. Example: Droparr `/data/staging` ↔ \*arr `/media-03/.droparr/staging`.
+### Shared staging volume — walkthrough
+
+The staging directory looks different inside each container — the number-one
+setup gotcha. Wiring it up means: one host folder, mounted into Droparr *and*
+into every \*arr that imports, plus a per-instance **path mapping**. Droparr +
+Sonarr shown below; Radarr works the same way (swap the image and ports).
+
+**1. Mount one host folder into both containers.** The same host folder
+(`./staging`, resolved against the compose file's directory) must be visible
+from Droparr and from every importing \*arr — each at its own container path.
+Create the host folders first, then bring the stack up:
+
+```bash
+mkdir -p config data staging sonarr-config
+docker compose pull && docker compose up -d
+```
+
+```yaml
+services:
+  droparr:
+    image: ghcr.io/patterueldev/droparr:latest
+    container_name: droparr
+    ports:
+      - "3100:3100"
+    environment:
+      - DROPARR_DATA=/data
+      - DROPARR_CONFIG=/config/config.json
+      - PUID=1000
+      - PGID=1000
+      - UMASK=022
+    volumes:
+      - ./config:/config
+      - ./data:/data
+      - ./staging:/data/staging          # ① Droparr's view of the shared folder
+    restart: unless-stopped
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest   # Radarr: lscr.io/linuxserver/radarr
+    container_name: sonarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    volumes:
+      - ./sonarr-config:/config
+      - /mnt/media:/mnt/media                  # your library root(s) — adjust
+      - ./staging:/mnt/IronWolf/.droparr       # ② Sonarr's view of the SAME host folder
+    ports:
+      - "8989:8989"
+    restart: unless-stopped
+```
+
+```
+host ./staging
+ ├─ /data/staging           in Droparr  → ① Settings → Staging directory
+ └─ /mnt/IronWolf/.droparr  in Sonarr   → ② the mapping's "remote" side
+```
+
+> Running the \*arrs in a separate Compose project? `./staging` resolves against
+> *each file's* directory — use the same **absolute** host path in both files
+> (e.g. `/srv/droparr-staging:/data/staging` for Droparr,
+> `/srv/droparr-staging:/mnt/IronWolf/.droparr` for Sonarr), or the containers
+> end up looking at different folders. Keep `PUID`/`PGID` matched across the
+> stack so the \*arrs can move what Droparr wrote.
+
+**2. Point Droparr at its view.** Settings → **Staging directory** →
+`/data/staging` (①) — the path *as Droparr's container sees it*. New drops are
+staged under it.
+
+**3. Add a path mapping for every in-use instance.** Settings → the instance
+(edit) → **Path mappings** (Droparr path → instance path): app `/data/staging`
+→ remote `/mnt/IronWolf/.droparr` (②). A drop staged at
+`/data/staging/Show (2024)/S01E01.mkv` is then handed to Sonarr as
+`/mnt/IronWolf/.droparr/Show (2024)/S01E01.mkv` — the same file on disk, in
+the path Sonarr can open. The longest matching app-side prefix wins, so a
+broader mapping is fine as long as it lines up with the mounts on both sides.
+Every instance referenced by at least one category ("in use") needs one that
+covers the staging dir.
+
+**4. Verify bottom-up.**
+
+```bash
+docker compose exec droparr ls /data/staging            # ① — your staged drops
+docker compose exec sonarr ls /mnt/IronWolf/.droparr    # ② — the same files
+```
+
+Both commands must show the same folders. Empty on one side: the two mounts
+don't point at the same host folder.
+
+> **Why it works this way:** manual import is executed by the \*arr, not by
+> Droparr. Droparr stages files and asks Sonarr/Radarr's import API to process
+> them, so the paths it sends must exist *inside the \*arr's* container.
+> Droparr only knows its own container's paths — the per-instance mapping
+> translates between the two views.
+
+**Reading the Settings warnings.** The amber box under **Settings → Staging
+directory** is advisory, but it points straight at what's missing:
+
+| Warning | What it means | Fix |
+| --- | --- | --- |
+| *Staging directory is not set — imports can't start until one is configured.* | no path saved yet | step 2 |
+| *Staging directory "…" does not exist on this machine.* (or *…is not a directory…*) | the path isn't there **inside the Droparr container** — the check runs in the container, not on the host | create the host folder (`mkdir -p staging`), fix typos, and confirm the volume mount |
+| *"Sonarr" cannot see the staging directory "…" — its path mappings don't cover it.* | that instance has no mapping whose app side covers the staging dir | step 3; only instances referenced by a category are checked |
+
+**Finding Droparr-visible paths.** The staging field will get the same folder
+autocomplete the \*arrs have —
+[issue #35](https://github.com/patterueldev/Droparr/issues/35). Until then, ask
+the container: `docker compose exec droparr ls /data` (or
+`find /data -maxdepth 2 -type d`).
 
 ### Port binding — only expose the origin to cloudflared
 
@@ -149,7 +255,9 @@ over the LAN *before* exposing the instance through the tunnel:
 > otherwise the host's LAN IP. Bonjour/`*.local` names resolve on Macs but
 > not inside containers — a frequent first-run mistake.
 
-Then configure instances, categories and the staging directory in **Settings**.
+Then configure instances, categories and the staging directory in **Settings**
+— the [shared staging walkthrough](#shared-staging-volume--walkthrough) above
+covers the mounts and mappings.
 
 ## 2. Create the Cloudflare Tunnel
 
@@ -322,6 +430,7 @@ git tag v1.0.0-rc2 && git push origin v1.0.0-rc2
 | Settings import did not change the Jellyfin URL | By design: imports keep the local Jellyfin URL (deployment-specific) and report it in the result |
 | WebSocket closes with `4401` | no or expired session — sign in again; frames are owner-scoped by design |
 | Tunnel hostname does not resolve | domain not on Cloudflare nameservers, or the proxied CNAME to `<UUID>.cfargotunnel.com` is missing |
+| Manual import lists no files / the \*arr can't see the staged drop | the instance's path mapping "remote" side doesn't match where the \*arr sees the shared volume — check the mounts ([shared staging walkthrough](#shared-staging-volume--walkthrough)) and the Settings warnings |
 
 > Cloudflare's Tunnel FAQ says visitor IPs are not "sent" to the origin — that
 > refers to the connection source (always cloudflared). The visitor address is

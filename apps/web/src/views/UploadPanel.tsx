@@ -8,6 +8,7 @@ import {
 } from "@droparr/shared";
 import { api, connectUploadEvents, formatBytes } from "../api";
 import { filesFromDataTransfer, filesFromInputList } from "../upload/collect";
+import { newDropId } from "../upload/dropId";
 import { reconcileFile } from "../upload/reconcile";
 import { createUpload } from "../upload/uploader";
 
@@ -39,10 +40,6 @@ interface LastDrop {
   dropId: string;
   files: { relPath: string; size: number }[];
   at: string;
-}
-
-function newDropId(): string {
-  return crypto.randomUUID().replace(/-/g, "").slice(0, 16);
 }
 
 function readLastDrop(): LastDrop | null {
