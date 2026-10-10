@@ -398,6 +398,28 @@ function EmptyState({
 
 // ---------------------------------------------------------------- Pick
 
+/** Remember the pick mode: upload is the default workflow, last choice sticks. */
+const LAST_MODE_KEY = "droparr.importMode";
+
+type PickMode = "path" | "upload";
+
+function readLastMode(): PickMode {
+  try {
+    const raw = localStorage.getItem(LAST_MODE_KEY);
+    return raw === "path" || raw === "upload" ? raw : "upload";
+  } catch {
+    return "upload";
+  }
+}
+
+function storeLastMode(mode: PickMode) {
+  try {
+    localStorage.setItem(LAST_MODE_KEY, mode);
+  } catch {
+    // Storage unavailable — the mode is session-only.
+  }
+}
+
 function PickStep({
   busy,
   stagingDir,
@@ -411,20 +433,23 @@ function PickStep({
   onAnalyze: (path: string) => void;
   onOpenSettings: () => void;
 }) {
-  const [mode, setMode] = useState<"path" | "upload">("path");
+  const [mode, setMode] = useState<PickMode>(readLastMode);
 
   return (
     <div className="space-y-4">
       <div className="flex gap-1 rounded-lg border border-zinc-800 bg-zinc-900/50 p-1 w-fit">
         {(
           [
-            ["path", "Server path"],
             ["upload", "Upload from device"],
-          ] as [typeof mode, string][]
+            ["path", "Server path"],
+          ] as [PickMode, string][]
         ).map(([id, label]) => (
           <button
             key={id}
-            onClick={() => setMode(id)}
+            onClick={() => {
+              setMode(id);
+              storeLastMode(id);
+            }}
             className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
               mode === id
                 ? "bg-zinc-800 text-white"
