@@ -9,6 +9,7 @@ import type {
   UploadSettings,
 } from "@droparr/shared";
 import { api, formatBytes, type SweepResult } from "../api";
+import { PathCombobox } from "./PathCombobox";
 
 const GIB = 1024 ** 3;
 
@@ -121,14 +122,15 @@ function StagingSection({
       subtitle="Shared volume path (as Droparr sees it) where drops are staged before the *arr imports them."
     >
       <div className="flex gap-2">
-        <input
+        <PathCombobox
           value={value}
-          onChange={(e) => {
-            setValue(e.target.value);
+          onChange={(v) => {
+            setValue(v);
             setDirty(true);
           }}
           placeholder="/data/staging"
-          className="flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm font-mono focus:border-emerald-600 focus:outline-none"
+          className="flex-1"
+          aria-label="Staging directory"
         />
         <button
           onClick={save}
@@ -138,6 +140,10 @@ function StagingSection({
           Save
         </button>
       </div>
+      <p className="text-xs text-zinc-500">
+        The path as Droparr sees it — the *arrs see the same shared volume at
+        their own path (per-instance mappings translate it).
+      </p>
       {status && <p className="text-xs text-zinc-400">{status}</p>}
 
       {issues.length > 0 && (
