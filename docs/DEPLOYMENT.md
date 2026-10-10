@@ -98,6 +98,7 @@ The important settings:
 | `PUID` / `PGID` (default `1000:1000`) | Must match the \*arr stack so the \*arrs can move staged files |
 | `UMASK` (default `022`) | Mode of newly created files |
 | `HOST=0.0.0.0` | Baked into the image: the container listens on all interfaces. Reachability is controlled by the **published port**, not this value |
+| `DROPARR_JELLYFIN_URL` (optional) | Overrides the Jellyfin URL stored in config — the escape hatch when the stored URL is unreachable, or nobody can log in to change it |
 
 ### Volumes and the shared staging view
 
@@ -142,6 +143,11 @@ over the LAN *before* exposing the instance through the tunnel:
 3. Confirm — that account becomes the Droparr admin and the wizard locks
    permanently (the marker lives in SQLite; deleting `config.json` cannot
    reopen it).
+
+> Use a Jellyfin URL that is reachable **from the Droparr container**: the
+> Docker service name (`http://jellyfin:8096`) when they share a network,
+> otherwise the host's LAN IP. Bonjour/`*.local` names resolve on Macs but
+> not inside containers — a frequent first-run mistake.
 
 Then configure instances, categories and the staging directory in **Settings**.
 
@@ -311,6 +317,9 @@ git tag v1.0.0-rc2 && git push origin v1.0.0-rc2
 | Sessions list shows `172.x`/`127.0.0.1` | `CF-Connecting-IP` missing — traffic may bypass the tunnel (direct LAN port), or a Transform Rule removed visitor-IP headers |
 | Cookie has no `Secure` | you're on plain HTTP (LAN) — expected; over the tunnel `X-Forwarded-Proto: https` triggers it |
 | `409 { "code": "setup_required" }` | first-run wizard not completed — do it on the LAN |
+| `Cannot reach Jellyfin: … getaddrinfo ENOTFOUND <name>` | The stored Jellyfin URL does not resolve inside the container (typical for `*.local`/Bonjour names). Use `http://jellyfin:8096` on a shared Docker network, or the host's LAN IP |
+| Locked out — login fails with the above | Fix without the UI: set `DROPARR_JELLYFIN_URL` in the compose environment, or edit `./config/config.json` → `jellyfin.baseUrl`; then `docker compose restart droparr` |
+| Settings import did not change the Jellyfin URL | By design: imports keep the local Jellyfin URL (deployment-specific) and report it in the result |
 | WebSocket closes with `4401` | no or expired session — sign in again; frames are owner-scoped by design |
 | Tunnel hostname does not resolve | domain not on Cloudflare nameservers, or the proxied CNAME to `<UUID>.cfargotunnel.com` is missing |
 

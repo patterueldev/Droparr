@@ -9,6 +9,7 @@ import type { LoginThrottle } from "../auth/throttle.js";
 import type { AuthEvents } from "../auth/events.js";
 import { requireAuth } from "../auth/guard.js";
 import { clientIp } from "../http/client-ip.js";
+import { effectiveJellyfinBaseUrl } from "../jellyfin/url.js";
 
 const loginSchema = z.object({
   username: z.string().min(1).max(256),
@@ -48,7 +49,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps): void {
     "/api/auth/login",
     { config: { rateLimit: LOGIN_RATE_LIMIT } },
     async (req, reply) => {
-      const baseUrl = config.get().jellyfin?.baseUrl;
+      const baseUrl = effectiveJellyfinBaseUrl(config.get());
       if (!baseUrl) {
         return reply.code(503).send({ error: "Jellyfin is not configured yet" });
       }
@@ -81,7 +82,10 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps): void {
             .send({ error: "Invalid username or password." });
         }
         return reply.code(502).send({
-          error: `Cannot reach Jellyfin: ${err instanceof Error ? err.message : String(err)}`,
+          error:
+            `Cannot reach Jellyfin: ${err instanceof Error ? err.message : String(err)}` +
+            " — the URL must be reachable from the Droparr container" +
+            " (inside Docker use the service name, e.g. http://jellyfin:8096).",
         });
       }
 

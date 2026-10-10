@@ -22,6 +22,7 @@ import { NotificationService } from "./notifications/service.js";
 import { SessionService } from "./auth/sessions.js";
 import { LoginThrottle } from "./auth/throttle.js";
 import { AuthEvents, type SessionRevokedEvent } from "./auth/events.js";
+import { effectiveJellyfinBaseUrl } from "./jellyfin/url.js";
 import { authGuard } from "./auth/guard.js";
 import { authRoutes } from "./routes/auth.js";
 import { userRoutes } from "./routes/users.js";
@@ -76,7 +77,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<BuiltApp> {
   // backfilled as complete so upgrading never reopens first-run setup (#6).
   db.initializeSetupState({
     adminExists: db.hasAdminUser(),
-    jellyfinConfigured: !!config.get().jellyfin?.baseUrl,
+    jellyfinConfigured: !!effectiveJellyfinBaseUrl(config.get()),
   });
 
   const app = Fastify({

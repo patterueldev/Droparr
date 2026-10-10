@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildExport, validateImport } from "./import.js";
+import {
+  buildExport,
+  reconcileJellyfinOnImport,
+  validateImport,
+} from "./import.js";
 import type { DroparrConfig } from "@droparr/shared";
 
 const VALID_CONFIG: DroparrConfig = {
@@ -177,5 +181,46 @@ describe("validateImport", () => {
       expect(warnings).toContain("TV Sonarr");
       expect(warnings).toContain("/data/staging");
     }
+  });
+});
+
+describe("reconcileJellyfinOnImport", () => {
+  const withJellyfin = (baseUrl?: string): DroparrConfig => ({
+    ...VALID_CONFIG,
+    ...(baseUrl ? { jellyfin: { baseUrl } } : {}),
+  });
+
+  it("keeps the local URL and warns when the file has a different one", () => {
+    const res = reconcileJellyfinOnImport(
+      withJellyfin("http://saturday.local:8096"),
+      withJellyfin("http://jellyfin:8096"),
+    );
+    expect(res.config.jellyfin?.baseUrl).toBe("http://jellyfin:8096");
+    expect(res.warning).toContain("Kept this machine's Jellyfin URL");
+    expect(res.warning).toContain("saturday.local");
+  });
+
+  it("takes the imported URL when nothing is configured locally (with a warning)", () => {
+    const res = reconcileJellyfinOnImport(
+      withJellyfin("http://jellyfin:8096"),
+      withJellyfin(),
+    );
+    expect(res.config.jellyfin?.baseUrl).toBe("http://jellyfin:8096");
+    expect(res.warning).toContain("reachable from the Droparr container");
+  });
+
+  it("stays silent when the URLs match", () => {
+    const res = reconcileJellyfinOnImport(
+      withJellyfin("http://jellyfin:8096"),
+      withJellyfin("http://jellyfin:8096"),
+    );
+    expect(res.config.jellyfin?.baseUrl).toBe("http://jellyfin:8096");
+    expect(res.warning).toBeUndefined();
+  });
+
+  it("stays silent when neither side has a Jellyfin URL", () => {
+    const res = reconcileJellyfinOnImport(withJellyfin(), withJellyfin());
+    expect(res.config.jellyfin).toBeUndefined();
+    expect(res.warning).toBeUndefined();
   });
 });

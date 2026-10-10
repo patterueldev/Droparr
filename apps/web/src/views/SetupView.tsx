@@ -295,6 +295,13 @@ function UrlStep({
         />
       </label>
 
+      <p className="text-[11px] leading-relaxed text-zinc-500">
+        Must be reachable from the Droparr server itself — inside Docker use
+        the service name (e.g. <code>http://jellyfin:8096</code>), otherwise
+        the host's LAN IP. Bonjour (<code>*.local</code>) names resolve on
+        your Mac but not inside a container.
+      </p>
+
       {testResult && (
         <p
           className={`text-xs ${
