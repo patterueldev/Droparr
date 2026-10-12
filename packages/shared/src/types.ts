@@ -70,6 +70,14 @@ export interface Instance {
   name: string;
   kind: InstanceKind;
   baseUrl: string;
+  /**
+   * Optional browser-facing base URL (the *arr's LAN / reverse-proxy /
+   * Bonjour address). Used only for links rendered to users — history deep
+   * links. API calls always use `baseUrl`. Set this when `baseUrl` is only
+   * reachable from Droparr itself (VPN container like gluetun, Docker
+   * service name, internal hostname).
+   */
+  webUrl?: string;
   apiKey: string;
   pathMappings: PathMapping[];
 }

@@ -11,15 +11,17 @@ export interface HistoryDeps {
 /**
  * Resolve response-only fields: the instance's current display name and an
  * absolute deep link into its UI (`/series/{titleSlug}` on Sonarr,
- * `/movie/{id}` on Radarr). Entries whose instance was deleted — or that lack
- * the coordinates the *arr UI needs — keep both fields undefined.
+ * `/movie/{id}` on Radarr). The link prefers the instance's `webUrl` — the
+ * browser-facing address — and falls back to `baseUrl`. Entries whose
+ * instance was deleted — or that lack the coordinates the *arr UI needs —
+ * keep both fields undefined.
  */
 export function enrichHistoryEntry(
   entry: HistoryEntry,
   instance: Instance | undefined,
 ): HistoryEntry {
   if (!instance) return entry;
-  const base = instance.baseUrl.replace(/\/+$/, "");
+  const base = (instance.webUrl ?? instance.baseUrl).replace(/\/+$/, "");
   let link: string | undefined;
   if (entry.kind === "series" && entry.titleSlug) {
     link = `${base}/series/${encodeURIComponent(entry.titleSlug)}`;

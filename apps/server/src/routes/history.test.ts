@@ -95,6 +95,37 @@ describe("historyRoutes enrichment", () => {
     expect(movie.link).toBe("http://radarr.local:7878/movie/11");
   });
 
+  it("prefers the browser-facing webUrl over the API baseUrl for links", async () => {
+    const { app, db } = await buildHarness([
+      // Trailing slash on webUrl exercises normalization too.
+      { ...SONARR, webUrl: "http://sonarr.saturday.local:8989/" },
+    ]);
+    db.addHistory(entry({ id: "series-1", titleSlug: "breaking-bad" }));
+
+    const res = await app.inject({ method: "GET", url: "/api/history" });
+    const series = (res.json() as HistoryEntry[]).find(
+      (e) => e.id === "series-1",
+    )!;
+    expect(series.link).toBe(
+      "http://sonarr.saturday.local:8989/series/breaking-bad",
+    );
+  });
+
+  it("accepts webUrl values without a port (reverse proxy on 80/443)", async () => {
+    const { app, db } = await buildHarness([
+      { ...SONARR, webUrl: "http://sonarr.saturday.local" },
+    ]);
+    db.addHistory(entry({ id: "series-1", titleSlug: "breaking-bad" }));
+
+    const res = await app.inject({ method: "GET", url: "/api/history" });
+    const series = (res.json() as HistoryEntry[]).find(
+      (e) => e.id === "series-1",
+    )!;
+    expect(series.link).toBe(
+      "http://sonarr.saturday.local/series/breaking-bad",
+    );
+  });
+
   it("omits the link when coordinates are missing or the instance is gone", async () => {
     const { app, db } = await buildHarness([SONARR]);
     db.addHistory(entry({ id: "no-slug" }));
