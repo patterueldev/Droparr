@@ -1018,7 +1018,8 @@ function InstanceForm({
           <span className="block text-[11px] leading-relaxed text-zinc-500">
             Browser links only (history deep links). Set this when the API URL
             isn't reachable from your browser — VPN/gluetun setups, internal
-            hostnames.
+            hostnames. Any valid URL works: with or without a port (reverse
+            proxies on 80/443 need none), http or https.
           </span>
         </Field>
       </div>
