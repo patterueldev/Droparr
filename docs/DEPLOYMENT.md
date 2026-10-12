@@ -259,6 +259,15 @@ Then configure instances, categories and the staging directory in **Settings**
 — the [shared staging walkthrough](#shared-staging-volume--walkthrough) above
 covers the mounts and mappings.
 
+### Instance URLs when the API is internal
+
+If an \*arr is only reachable from Droparr through an internal address — a VPN
+container (e.g. gluetun), a Docker service name — give that instance a **Web UI
+URL**: the address your *browser* uses (e.g. `http://sonarr.saturday.local:8989`).
+API calls keep using the Base URL; the Web UI URL is used for the links Droparr
+renders (history deep links into the \*arr UI). It is optional and never fetched
+by the server, so a browser-only address is fine.
+
 ## 2. Create the Cloudflare Tunnel
 
 ### Option A — dashboard (token-based, recommended)

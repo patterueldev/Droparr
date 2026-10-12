@@ -59,6 +59,8 @@ export const instanceSchema = z.object({
   name: z.string().min(1),
   kind: instanceKindSchema,
   baseUrl: z.string().url(),
+  /** Browser-facing base URL for rendered links (optional). */
+  webUrl: z.string().url().optional(),
   apiKey: z.string().min(1),
   pathMappings: z.array(pathMappingSchema),
 });

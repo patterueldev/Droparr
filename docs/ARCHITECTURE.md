@@ -33,7 +33,7 @@ Design principle: **Droparr never re-implements renaming, quality detection, or 
 ## Data model (v1)
 
 ```ts
-Instance  { id, name, kind: "series" | "movie", baseUrl, apiKey,
+Instance  { id, name, kind: "series" | "movie", baseUrl, webUrl?, apiKey,
             pathMappings: { app: string; remote: string }[] }
 
 Category  { id, name, kind, instanceId, rootFolder, qualityProfileId?,

@@ -757,6 +757,7 @@ function InstancesSection({
       name: i.name,
       kind: i.kind,
       baseUrl: i.baseUrl,
+      webUrl: i.webUrl,
       apiKey: i.apiKey,
       pathMappings: i.pathMappings,
     });
@@ -764,13 +765,14 @@ function InstancesSection({
 
   const save = async () => {
     if (!draft) return;
+    const body = { ...draft, webUrl: draft.webUrl?.trim() || undefined };
     try {
       if (editingId) {
-        await api.updateInstance(editingId, draft);
+        await api.updateInstance(editingId, body);
         // Connection values may have changed — re-test.
         autoTested.current.delete(editingId);
       } else {
-        await api.createInstance(draft);
+        await api.createInstance(body);
       }
       setDraft(null);
       setEditingId(null);
@@ -847,6 +849,7 @@ function InstancesSection({
                 </div>
                 <div className="text-xs text-zinc-500 font-mono truncate">
                   {i.baseUrl}
+                  {i.webUrl && <> · web {i.webUrl}</>}
                   {i.pathMappings.length > 0 && (
                     <>
                       {" "}
@@ -1004,6 +1007,19 @@ function InstanceForm({
             className="input font-mono"
             type="password"
           />
+        </Field>
+        <Field label="Web UI URL (optional)">
+          <input
+            value={draft.webUrl ?? ""}
+            onChange={(e) => set({ webUrl: e.target.value })}
+            placeholder="http://sonarr.saturday.local:8989"
+            className="input font-mono"
+          />
+          <span className="block text-[11px] leading-relaxed text-zinc-500">
+            Browser links only (history deep links). Set this when the API URL
+            isn't reachable from your browser — VPN/gluetun setups, internal
+            hostnames.
+          </span>
         </Field>
       </div>
 
